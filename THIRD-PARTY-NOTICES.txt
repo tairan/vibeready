@@ -1,0 +1,8 @@
+VibeReady third-party notices
+
+CHI-16 native client skeleton:
+- No third-party runtime libraries are bundled.
+- The client skeleton uses Windows APIs provided by the operating system.
+
+Build tools such as CMake, Ninja, and Microsoft C++ tooling are developer
+tools only. They are not distributed inside the VibeReady ZIP.
