@@ -9,6 +9,47 @@ $buildDir = Join-Path $repoRoot "build\windows-x64"
 $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
 $zipPath = Join-Path $repoRoot "dist\VibeReady-Windows-x64.zip"
 
+function Import-CmdEnvironment {
+    param([string]$BatchFile)
+
+    if (-not (Test-Path $BatchFile)) {
+        throw "Batch file not found: $BatchFile"
+    }
+
+    $environment = cmd.exe /s /c "`"$BatchFile`" >nul && set"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to import environment from: $BatchFile"
+    }
+
+    foreach ($line in $environment) {
+        $separator = $line.IndexOf("=")
+        if ($separator -le 0) {
+            continue
+        }
+
+        $name = $line.Substring(0, $separator)
+        $value = $line.Substring($separator + 1)
+        Set-Item -Path "Env:$name" -Value $value
+    }
+}
+
+function Find-VcVars64 {
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        "${env:ProgramFiles}\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 function Require-Command {
     param([string]$Name)
 
@@ -35,6 +76,18 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 
 Require-Command "cmake"
+
+if (-not (Get-Command "cl" -ErrorAction SilentlyContinue)) {
+    $vcvars64 = Find-VcVars64
+    if (-not $vcvars64) {
+        throw "MSVC x64 compiler environment was not found. Install or enable Visual Studio Build Tools with MSVC."
+    }
+
+    Import-CmdEnvironment $vcvars64
+}
+
+Require-Command "cl"
+Require-Command "link"
 
 $generatorArgs = @()
 if (Get-Command "ninja" -ErrorAction SilentlyContinue) {
