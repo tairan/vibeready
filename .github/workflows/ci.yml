@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "tairanwang/**"
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  windows-portable-client:
+    name: Windows portable client
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release ZIP
+        shell: pwsh
+        run: ./scripts/build-release.ps1
+
+      - name: Verify release ZIP contents
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zipPath = "dist/VibeReady-Windows-x64.zip"
+          if (-not (Test-Path $zipPath)) {
+            throw "Missing release ZIP: $zipPath"
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            $entries = $zip.Entries | ForEach-Object { $_.FullName }
+            $required = @(
+              "VibeReady.exe",
+              "README.txt",
+              "THIRD-PARTY-NOTICES.txt"
+            )
+
+            foreach ($name in $required) {
+              if ($entries -notcontains $name) {
+                throw "Release ZIP is missing required file: $name"
+              }
+            }
+          }
+          finally {
+            $zip.Dispose()
+          }
+
+      - name: Upload release ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: VibeReady-Windows-x64
+          path: dist/VibeReady-Windows-x64.zip
+          if-no-files-found: error
