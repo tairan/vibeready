@@ -1,0 +1,310 @@
+{
+  "locales": ["en", "zh-CN", "ja"],
+  "primaryEntryScreenId": "home",
+  "primaryEntryCopy": {
+    "en": "Check web vibe coding environment",
+    "zh-CN": "检查网页 vibe coding 环境",
+    "ja": "Web vibe coding 環境をチェック"
+  },
+  "tools": ["Git", "Node.js", "npm", "VS Code"],
+  "screens": [
+    {
+      "id": "startup",
+      "route": "/startup",
+      "copy": {
+        "en": {
+          "title": "Starting VibeReady",
+          "body": "Checking whether this Windows device can run the portable client.",
+          "status": "Loading preferences and system support."
+        },
+        "zh-CN": {
+          "title": "正在启动 VibeReady",
+          "body": "正在检查这台 Windows 设备是否可以运行免安装客户端。",
+          "status": "正在加载偏好设置和系统支持状态。"
+        },
+        "ja": {
+          "title": "VibeReady を起動中",
+          "body": "この Windows デバイスでポータブルクライアントを実行できるか確認しています。",
+          "status": "設定とシステム対応状況を読み込んでいます。"
+        }
+      }
+    },
+    {
+      "id": "unsupported_system",
+      "route": "/unsupported-system",
+      "copy": {
+        "en": {
+          "title": "This system is not supported",
+          "body": "VibeReady MVP supports Windows 10 x64 and Windows 11 x64.",
+          "primaryAction": "Close"
+        },
+        "zh-CN": {
+          "title": "当前系统不受支持",
+          "body": "VibeReady MVP 支持 Windows 10 x64 和 Windows 11 x64。",
+          "primaryAction": "关闭"
+        },
+        "ja": {
+          "title": "このシステムはサポート対象外です",
+          "body": "VibeReady MVP は Windows 10 x64 と Windows 11 x64 に対応しています。",
+          "primaryAction": "閉じる"
+        }
+      }
+    },
+    {
+      "id": "language_telemetry",
+      "route": "/language-telemetry",
+      "copy": {
+        "en": {
+          "title": "Language and telemetry",
+          "body": "Choose the UI language and whether VibeReady may send privacy-preserving product telemetry.",
+          "primaryAction": "Save preferences",
+          "secondaryAction": "Do not send telemetry"
+        },
+        "zh-CN": {
+          "title": "语言与遥测",
+          "body": "选择界面语言，并决定 VibeReady 是否可以发送保护隐私的产品遥测。",
+          "primaryAction": "保存偏好设置",
+          "secondaryAction": "不发送遥测"
+        },
+        "ja": {
+          "title": "言語とテレメトリー",
+          "body": "UI 言語と、VibeReady がプライバシーを保護した製品テレメトリーを送信してよいかを選択します。",
+          "primaryAction": "設定を保存",
+          "secondaryAction": "テレメトリーを送信しない"
+        }
+      }
+    },
+    {
+      "id": "home",
+      "route": "/home",
+      "isPrimaryEntry": true,
+      "copy": {
+        "en": {
+          "title": "VibeReady",
+          "body": "Check this device before starting web vibe coding work.",
+          "primaryAction": "Check web vibe coding environment",
+          "secondaryAction": "Settings"
+        },
+        "zh-CN": {
+          "title": "VibeReady",
+          "body": "开始网页 vibe coding 工作前，先检查这台设备。",
+          "primaryAction": "检查网页 vibe coding 环境",
+          "secondaryAction": "设置"
+        },
+        "ja": {
+          "title": "VibeReady",
+          "body": "Web vibe coding 作業を始める前に、このデバイスをチェックします。",
+          "primaryAction": "Web vibe coding 環境をチェック",
+          "secondaryAction": "設定"
+        }
+      }
+    },
+    {
+      "id": "scanning",
+      "route": "/scanning",
+      "copy": {
+        "en": {
+          "title": "Checking environment",
+          "body": "VibeReady is checking Git, Node.js, npm, and VS Code.",
+          "status": "This usually takes less than one minute."
+        },
+        "zh-CN": {
+          "title": "正在检查环境",
+          "body": "VibeReady 正在检查 Git、Node.js、npm 和 VS Code。",
+          "status": "通常不到一分钟。"
+        },
+        "ja": {
+          "title": "環境をチェック中",
+          "body": "VibeReady は Git、Node.js、npm、VS Code をチェックしています。",
+          "status": "通常は 1 分以内に完了します。"
+        }
+      }
+    },
+    {
+      "id": "scan_results",
+      "route": "/scan-results",
+      "copy": {
+        "en": {
+          "title": "Scan results",
+          "body": "Review readiness for Git, Node.js, npm, and VS Code.",
+          "primaryAction": "Review fix plan",
+          "secondaryAction": "Check again"
+        },
+        "zh-CN": {
+          "title": "扫描结果",
+          "body": "查看 Git、Node.js、npm 和 VS Code 的就绪状态。",
+          "primaryAction": "查看修复计划",
+          "secondaryAction": "重新检查"
+        },
+        "ja": {
+          "title": "スキャン結果",
+          "body": "Git、Node.js、npm、VS Code の準備状況を確認します。",
+          "primaryAction": "修復計画を確認",
+          "secondaryAction": "再チェック"
+        }
+      }
+    },
+    {
+      "id": "fix_plan",
+      "route": "/fix-plan",
+      "copy": {
+        "en": {
+          "title": "Fix plan",
+          "body": "VibeReady will show each planned change before it starts.",
+          "primaryAction": "Start fix",
+          "secondaryAction": "Use manual steps"
+        },
+        "zh-CN": {
+          "title": "修复计划",
+          "body": "VibeReady 会在开始前列出每一项计划变更。",
+          "primaryAction": "开始修复",
+          "secondaryAction": "使用手动步骤"
+        },
+        "ja": {
+          "title": "修復計画",
+          "body": "VibeReady は開始前に予定している変更をすべて表示します。",
+          "primaryAction": "修復を開始",
+          "secondaryAction": "手動手順を使う"
+        }
+      }
+    },
+    {
+      "id": "fix_progress",
+      "route": "/fix-progress",
+      "copy": {
+        "en": {
+          "title": "Fixing environment",
+          "body": "Keep VibeReady open while fixes are running.",
+          "status": "Progress and any required user action will appear here."
+        },
+        "zh-CN": {
+          "title": "正在修复环境",
+          "body": "修复运行时请保持 VibeReady 打开。",
+          "status": "进度和需要用户处理的事项会显示在这里。"
+        },
+        "ja": {
+          "title": "環境を修復中",
+          "body": "修復の実行中は VibeReady を開いたままにしてください。",
+          "status": "進行状況と必要な操作がここに表示されます。"
+        }
+      }
+    },
+    {
+      "id": "manual_steps",
+      "route": "/manual-steps",
+      "copy": {
+        "en": {
+          "title": "Manual installation steps",
+          "body": "Follow the official instructions, then return to VibeReady for verification.",
+          "primaryAction": "Open official instructions",
+          "secondaryAction": "I finished the steps"
+        },
+        "zh-CN": {
+          "title": "手动安装步骤",
+          "body": "按照官方说明完成安装，然后返回 VibeReady 验证。",
+          "primaryAction": "打开官方说明",
+          "secondaryAction": "我已完成步骤"
+        },
+        "ja": {
+          "title": "手動インストール手順",
+          "body": "公式手順に従ってから、VibeReady に戻って検証します。",
+          "primaryAction": "公式手順を開く",
+          "secondaryAction": "手順を完了しました"
+        }
+      }
+    },
+    {
+      "id": "verifying",
+      "route": "/verifying",
+      "copy": {
+        "en": {
+          "title": "Verifying environment",
+          "body": "VibeReady is confirming Git, Node.js, npm, and VS Code are usable.",
+          "status": "Verification is running."
+        },
+        "zh-CN": {
+          "title": "正在验证环境",
+          "body": "VibeReady 正在确认 Git、Node.js、npm 和 VS Code 可用。",
+          "status": "验证正在运行。"
+        },
+        "ja": {
+          "title": "環境を検証中",
+          "body": "VibeReady は Git、Node.js、npm、VS Code が使用可能か確認しています。",
+          "status": "検証を実行しています。"
+        }
+      }
+    },
+    {
+      "id": "verification_failed",
+      "route": "/verification-failed",
+      "copy": {
+        "en": {
+          "title": "Verification failed",
+          "body": "One or more tools still cannot be used for web vibe coding.",
+          "primaryAction": "Try again",
+          "secondaryAction": "Use manual steps"
+        },
+        "zh-CN": {
+          "title": "验证失败",
+          "body": "仍有一个或多个工具无法用于网页 vibe coding。",
+          "primaryAction": "重试",
+          "secondaryAction": "使用手动步骤"
+        },
+        "ja": {
+          "title": "検証に失敗しました",
+          "body": "Web vibe coding にまだ使用できないツールがあります。",
+          "primaryAction": "もう一度試す",
+          "secondaryAction": "手動手順を使う"
+        }
+      }
+    },
+    {
+      "id": "ready",
+      "route": "/ready",
+      "copy": {
+        "en": {
+          "title": "Ready",
+          "body": "This device is ready for web vibe coding with Git, Node.js, npm, and VS Code.",
+          "primaryAction": "Open VS Code",
+          "secondaryAction": "Settings"
+        },
+        "zh-CN": {
+          "title": "Ready",
+          "body": "这台设备已准备好使用 Git、Node.js、npm 和 VS Code 进行网页 vibe coding。",
+          "primaryAction": "打开 VS Code",
+          "secondaryAction": "设置"
+        },
+        "ja": {
+          "title": "Ready",
+          "body": "このデバイスは Git、Node.js、npm、VS Code で Web vibe coding を始められます。",
+          "primaryAction": "VS Code を開く",
+          "secondaryAction": "設定"
+        }
+      }
+    },
+    {
+      "id": "settings",
+      "route": "/settings",
+      "copy": {
+        "en": {
+          "title": "Settings",
+          "body": "Change language and telemetry preferences.",
+          "primaryAction": "Save settings",
+          "secondaryAction": "Cancel"
+        },
+        "zh-CN": {
+          "title": "设置",
+          "body": "更改语言和遥测偏好设置。",
+          "primaryAction": "保存设置",
+          "secondaryAction": "取消"
+        },
+        "ja": {
+          "title": "設定",
+          "body": "言語とテレメトリー設定を変更します。",
+          "primaryAction": "設定を保存",
+          "secondaryAction": "キャンセル"
+        }
+      }
+    }
+  ]
+}
