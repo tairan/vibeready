@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <winhttp.h>
 #include <shlobj.h>
 
 #include <cwctype>
@@ -248,6 +249,8 @@ struct StartupChecks {
     GitScanResult git;
     CommandCheckResult node;
     CommandCheckResult npm;
+    CommandCheckResult winget;
+    CommandCheckResult network;
     bool tempWritable = false;
     bool configWritable = false;
     bool logWritable = false;
@@ -766,6 +769,86 @@ CommandCheckResult RunVersionCommandCheck(const wchar_t* tool, const wchar_t* co
     return result;
 }
 
+CommandCheckResult RunWingetCheck() {
+    constexpr DWORD kToolTimeoutMs = 5000;
+    CommandCheckResult result;
+    result.tool = L"winget";
+    result.errorCode = L"WINGET_UNAVAILABLE";
+    GetLocalTime(&result.checkedAt);
+
+    if (!CommandExists(L"winget.exe")) {
+        result.state = ToolState::Unusable;
+        return result;
+    }
+
+    DWORD exitCode = 1;
+    std::wstring version;
+    ProcessRunStatus status = RunProcessCaptureWithTimeout(L"winget.exe --version", kToolTimeoutMs, &exitCode, &version);
+    if (status == ProcessRunStatus::TimedOut) {
+        result.state = ToolState::Unusable;
+        result.errorCode = L"TOOL_TIMEOUT";
+        return result;
+    }
+    if (status != ProcessRunStatus::Started || exitCode != 0) {
+        result.state = ToolState::Unusable;
+        return result;
+    }
+
+    result.state = ToolState::Ready;
+    result.errorCode.clear();
+    result.detectedVersion = version.empty() ? L"detected" : version;
+    result.canAutoRepair = false;
+    return result;
+}
+
+CommandCheckResult RunNetworkCheck() {
+    CommandCheckResult result;
+    result.tool = L"network";
+    result.state = ToolState::Unusable;
+    result.errorCode = L"NETWORK_UNAVAILABLE";
+    GetLocalTime(&result.checkedAt);
+
+    HINTERNET session = WinHttpOpen(L"VibeReady/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        return result;
+    }
+    WinHttpSetTimeouts(session, 3000, 3000, 3000, 3000);
+
+    HINTERNET connection = WinHttpConnect(session, L"www.microsoft.com", INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        return result;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connection, L"HEAD", L"/", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return result;
+    }
+
+    BOOL ok = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(request, nullptr);
+
+    if (ok) {
+        DWORD statusCode = 0;
+        DWORD statusCodeSize = sizeof(statusCode);
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX) &&
+            statusCode >= 200 && statusCode < 500) {
+            result.state = ToolState::Ready;
+            result.errorCode.clear();
+            result.detectedVersion = L"https reachable";
+            result.canAutoRepair = false;
+        }
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return result;
+}
+
 GitScanResult RunGitScan() {
     constexpr DWORD kToolTimeoutMs = 5000;
     GitScanResult result;
@@ -977,6 +1060,8 @@ StartupChecks RunStartupChecks() {
     checks.git = RunGitScan();
     checks.node = RunVersionCommandCheck(L"node", L"node.exe", L"node.exe --version", L"NODE_NOT_FOUND");
     checks.npm = RunVersionCommandCheck(L"npm", L"npm.cmd", L"cmd.exe /d /s /c \"npm.cmd --version\"", L"NPM_NOT_FOUND");
+    checks.winget = RunWingetCheck();
+    checks.network = RunNetworkCheck();
 
     wchar_t tempPath[MAX_PATH + 1] = {};
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
@@ -1125,6 +1210,8 @@ std::wstring BuildStatusText() {
     text += GitStatusText();
     text += CommandStatusLine(L"Node.js", g_state.checks.node);
     text += CommandStatusLine(L"npm", g_state.checks.npm);
+    text += CommandStatusLine(L"WinGet", g_state.checks.winget);
+    text += CommandStatusLine(L"Network", g_state.checks.network);
     text += CheckLine(L"Temp", g_state.checks.tempWritable);
     text += CheckLine(L"Config", g_state.checks.configWritable);
     text += CheckLine(L"Log", g_state.checks.logWritable);

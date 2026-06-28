@@ -22,6 +22,10 @@ add_executable(VibeReady WIN32
   src/windows/main.cpp
 )
 
+target_link_libraries(VibeReady PRIVATE
+  winhttp
+)
+
 target_compile_definitions(VibeReady PRIVATE
   UNICODE
   _UNICODE
