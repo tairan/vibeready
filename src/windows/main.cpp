@@ -70,6 +70,15 @@ struct GitScanResult {
     SYSTEMTIME checkedAt = {};
 };
 
+struct CommandCheckResult {
+    std::wstring tool;
+    ToolState state = ToolState::Missing;
+    std::wstring errorCode;
+    std::wstring detectedVersion;
+    bool canAutoRepair = true;
+    SYSTEMTIME checkedAt = {};
+};
+
 struct Copy {
     const wchar_t* languageName;
     const wchar_t* startupTitle;
@@ -237,6 +246,8 @@ struct StartupChecks {
     bool mayRequireUacForInstall = true;
     VscodeScanResult vscode;
     GitScanResult git;
+    CommandCheckResult node;
+    CommandCheckResult npm;
     bool tempWritable = false;
     bool configWritable = false;
     bool logWritable = false;
@@ -574,6 +585,44 @@ bool CreateOwnedTempDirectory(std::wstring* dir) {
     return true;
 }
 
+std::wstring TrimVersion(std::wstring value) {
+    while (!value.empty() && (value.back() == L'\r' || value.back() == L'\n' || value.back() == L' ' || value.back() == L'\t')) {
+        value.pop_back();
+    }
+    size_t start = 0;
+    while (start < value.size() && (value[start] == L'\r' || value[start] == L'\n' || value[start] == L' ' || value[start] == L'\t')) {
+        ++start;
+    }
+    if (start > 0) {
+        value.erase(0, start);
+    }
+    if (value.size() > 32) {
+        value.resize(32);
+    }
+    return value;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+    if (value.empty()) {
+        return L"";
+    }
+
+    int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (needed == 0) {
+        needed = MultiByteToWideChar(CP_ACP, 0, value.data(), static_cast<int>(value.size()), nullptr, 0);
+        if (needed == 0) {
+            return L"";
+        }
+        std::wstring fallback(static_cast<size_t>(needed), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, value.data(), static_cast<int>(value.size()), fallback.data(), needed);
+        return fallback;
+    }
+
+    std::wstring wide(static_cast<size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide.data(), needed);
+    return wide;
+}
+
 enum class ProcessRunStatus {
     Started,
     NotStarted,
@@ -617,6 +666,104 @@ ProcessRunStatus RunProcessWithTimeout(const std::wstring& commandLine, const st
     CloseHandle(process.hProcess);
     *exitCode = code;
     return ProcessRunStatus::Started;
+}
+
+ProcessRunStatus RunProcessCaptureWithTimeout(const std::wstring& commandLine, DWORD timeoutMs, DWORD* exitCode, std::wstring* output) {
+    SECURITY_ATTRIBUTES security = {};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    HANDLE readPipe = nullptr;
+    HANDLE writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &security, 0)) {
+        return ProcessRunStatus::NotStarted;
+    }
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+    std::wstring mutableCommand = commandLine;
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = writePipe;
+    startup.hStdError = writePipe;
+    PROCESS_INFORMATION process = {};
+
+    BOOL created = CreateProcessW(
+        nullptr,
+        mutableCommand.data(),
+        nullptr,
+        nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        nullptr,
+        &startup,
+        &process);
+
+    CloseHandle(writePipe);
+    if (!created) {
+        CloseHandle(readPipe);
+        return ProcessRunStatus::NotStarted;
+    }
+
+    DWORD waitResult = WaitForSingleObject(process.hProcess, timeoutMs);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 1000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        CloseHandle(readPipe);
+        return ProcessRunStatus::TimedOut;
+    }
+
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+
+    std::string captured;
+    char buffer[256] = {};
+    DWORD read = 0;
+    while (captured.size() < 1024 && ReadFile(readPipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+        captured.append(buffer, buffer + read);
+    }
+
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    CloseHandle(readPipe);
+    *exitCode = code;
+    *output = TrimVersion(Utf8ToWide(captured));
+    return ProcessRunStatus::Started;
+}
+
+CommandCheckResult RunVersionCommandCheck(const wchar_t* tool, const wchar_t* command, const wchar_t* commandLine, const wchar_t* missingCode) {
+    constexpr DWORD kToolTimeoutMs = 5000;
+    CommandCheckResult result;
+    result.tool = tool;
+    result.errorCode = missingCode;
+    GetLocalTime(&result.checkedAt);
+
+    if (!CommandExists(command)) {
+        result.state = ToolState::Missing;
+        return result;
+    }
+
+    DWORD exitCode = 1;
+    std::wstring version;
+    ProcessRunStatus status = RunProcessCaptureWithTimeout(commandLine, kToolTimeoutMs, &exitCode, &version);
+    if (status == ProcessRunStatus::TimedOut) {
+        result.state = ToolState::Unusable;
+        result.errorCode = L"TOOL_TIMEOUT";
+        return result;
+    }
+    if (status != ProcessRunStatus::Started || exitCode != 0) {
+        result.state = ToolState::Unusable;
+        return result;
+    }
+
+    result.state = ToolState::Ready;
+    result.errorCode.clear();
+    result.detectedVersion = version.empty() ? L"detected" : version;
+    result.canAutoRepair = false;
+    return result;
 }
 
 GitScanResult RunGitScan() {
@@ -828,6 +975,8 @@ StartupChecks RunStartupChecks() {
     checks.mayRequireUacForInstall = checks.systemDetails.mayRequireUacForInstall;
     checks.vscode = RunVscodeScan();
     checks.git = RunGitScan();
+    checks.node = RunVersionCommandCheck(L"node", L"node.exe", L"node.exe --version", L"NODE_NOT_FOUND");
+    checks.npm = RunVersionCommandCheck(L"npm", L"npm.cmd", L"cmd.exe /d /s /c \"npm.cmd --version\"", L"NPM_NOT_FOUND");
 
     wchar_t tempPath[MAX_PATH + 1] = {};
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
@@ -927,6 +1076,22 @@ std::wstring VscodeStatusText() {
     return text;
 }
 
+std::wstring CommandStatusLine(const wchar_t* name, const CommandCheckResult& result) {
+    const Copy& copy = Text(g_state.preferences.locale);
+    std::wstring text = std::wstring(L"  ") + name + L": ";
+    if (result.state == ToolState::Ready) {
+        text += copy.supported;
+        if (!result.detectedVersion.empty()) {
+            text += L" (" + result.detectedVersion + L")";
+        }
+    } else {
+        text += copy.unsupported;
+        text += L" (" + result.errorCode + L")";
+    }
+    text += L"\r\n";
+    return text;
+}
+
 std::wstring GitStatusText() {
     const Copy& copy = Text(g_state.preferences.locale);
     const GitScanResult& result = g_state.checks.git;
@@ -958,6 +1123,8 @@ std::wstring BuildStatusText() {
     text += std::wstring(L"  UAC: ") + (g_state.checks.mayRequireUacForInstall ? copy.uacMayAppear : copy.uacNotExpected) + L"\r\n";
     text += VscodeStatusText();
     text += GitStatusText();
+    text += CommandStatusLine(L"Node.js", g_state.checks.node);
+    text += CommandStatusLine(L"npm", g_state.checks.npm);
     text += CheckLine(L"Temp", g_state.checks.tempWritable);
     text += CheckLine(L"Config", g_state.checks.configWritable);
     text += CheckLine(L"Log", g_state.checks.logWritable);
