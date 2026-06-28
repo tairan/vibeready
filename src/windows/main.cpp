@@ -17,6 +17,33 @@ enum class Locale {
     Ja,
 };
 
+enum class ToolState {
+    Ready,
+    Unsupported,
+    Error,
+};
+
+struct ScanResult {
+    std::wstring tool;
+    ToolState state = ToolState::Error;
+    std::wstring errorCode;
+    std::wstring detectedVersion;
+    std::wstring detailKey;
+    bool canAutoRepair = false;
+    SYSTEMTIME checkedAt = {};
+};
+
+struct SystemScanDetails {
+    DWORD majorVersion = 0;
+    DWORD minorVersion = 0;
+    DWORD buildNumber = 0;
+    WORD nativeArchitecture = PROCESSOR_ARCHITECTURE_UNKNOWN;
+    bool isWindows10Or11 = false;
+    bool isX64 = false;
+    bool isAdministrator = false;
+    bool mayRequireUacForInstall = true;
+};
+
 struct Copy {
     const wchar_t* languageName;
     const wchar_t* startupTitle;
@@ -35,6 +62,10 @@ struct Copy {
     const wchar_t* logWarning;
     const wchar_t* unsupportedSystemTitle;
     const wchar_t* unsupportedSystemBody;
+    const wchar_t* administrator;
+    const wchar_t* standardUser;
+    const wchar_t* uacMayAppear;
+    const wchar_t* uacNotExpected;
 };
 
 const Copy& Text(Locale locale) {
@@ -55,7 +86,11 @@ const Copy& Text(Locale locale) {
         L"Preferences cannot be saved, but scanning can continue.",
         L"Local log cannot be written, but scanning can continue.",
         L"This system is not supported",
-        L"VibeReady MVP supports Windows 10 x64 and Windows 11 x64."
+        L"VibeReady MVP supports Windows 10 x64 and Windows 11 x64.",
+        L"Administrator",
+        L"Standard user",
+        L"Future installs may ask for administrator confirmation.",
+        L"Administrator confirmation is not expected for the current scan."
     };
     static const Copy zh = {
         L"简体中文",
@@ -74,7 +109,11 @@ const Copy& Text(Locale locale) {
         L"偏好设置无法保存，但仍可继续扫描。",
         L"本地日志无法写入，但仍可继续扫描。",
         L"当前系统不受支持",
-        L"VibeReady MVP 支持 Windows 10 x64 和 Windows 11 x64。"
+        L"VibeReady MVP 支持 Windows 10 x64 和 Windows 11 x64。",
+        L"管理员",
+        L"标准用户",
+        L"后续安装可能会要求管理员确认。",
+        L"当前扫描预计不会要求管理员确认。"
     };
     static const Copy ja = {
         L"日本語",
@@ -93,7 +132,11 @@ const Copy& Text(Locale locale) {
         L"設定を保存できませんが、スキャンは続行できます。",
         L"ローカルログを書き込めませんが、スキャンは続行できます。",
         L"このシステムはサポート対象外です",
-        L"VibeReady MVP は Windows 10 x64 と Windows 11 x64 に対応しています。"
+        L"VibeReady MVP は Windows 10 x64 と Windows 11 x64 に対応しています。",
+        L"管理者",
+        L"標準ユーザー",
+        L"今後のインストールでは管理者確認が表示される可能性があります。",
+        L"現在のスキャンでは管理者確認は不要です。"
     };
 
     switch (locale) {
@@ -148,11 +191,15 @@ Locale DetectSystemLocale() {
 struct StartupChecks {
     bool supportedWindows = false;
     bool x64 = false;
+    bool administrator = false;
+    bool mayRequireUacForInstall = true;
     bool tempWritable = false;
     bool configWritable = false;
     bool logWritable = false;
     std::wstring configDir;
     std::wstring logPath;
+    ScanResult systemResult;
+    SystemScanDetails systemDetails;
 };
 
 struct Preferences {
@@ -231,7 +278,7 @@ bool DirectoryWritable(const std::wstring& dir) {
     return true;
 }
 
-bool IsWindows10OrLater() {
+bool QueryWindowsVersion(RTL_OSVERSIONINFOW* version) {
     using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     if (!ntdll) {
@@ -242,21 +289,92 @@ bool IsWindows10OrLater() {
         return false;
     }
 
-    RTL_OSVERSIONINFOW version = {};
-    version.dwOSVersionInfoSize = sizeof(version);
-    if (rtlGetVersion(&version) != 0) {
+    version->dwOSVersionInfoSize = sizeof(*version);
+    if (rtlGetVersion(version) != 0) {
         return false;
     }
-    return version.dwMajorVersion >= 10;
+    return true;
 }
 
-bool IsX64Windows() {
-#if defined(_M_X64) || defined(__x86_64__)
-    return true;
-#else
-    BOOL isWow64 = FALSE;
-    return IsWow64Process(GetCurrentProcess(), &isWow64) && isWow64;
-#endif
+std::wstring WindowsDisplayVersion(const SystemScanDetails& details) {
+    std::wstring name = details.buildNumber >= 22000 ? L"Windows 11" : L"Windows 10";
+    return name + L" build " + std::to_wstring(details.buildNumber);
+}
+
+bool IsSupportedWindowsVersion(const RTL_OSVERSIONINFOW& version) {
+    return version.dwMajorVersion == 10 && version.dwBuildNumber >= 10240;
+}
+
+WORD NativeArchitecture() {
+    SYSTEM_INFO info = {};
+    GetNativeSystemInfo(&info);
+    return info.wProcessorArchitecture;
+}
+
+std::wstring ArchitectureName(WORD architecture) {
+    switch (architecture) {
+    case PROCESSOR_ARCHITECTURE_AMD64:
+        return L"x64";
+    case PROCESSOR_ARCHITECTURE_ARM64:
+        return L"arm64";
+    case PROCESSOR_ARCHITECTURE_INTEL:
+        return L"x86";
+    default:
+        return L"unknown";
+    }
+}
+
+bool IsAdministrator() {
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    PSID administratorsGroup = nullptr;
+    if (!AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &administratorsGroup)) {
+        return false;
+    }
+
+    BOOL isMember = FALSE;
+    BOOL ok = CheckTokenMembership(nullptr, administratorsGroup, &isMember);
+    FreeSid(administratorsGroup);
+    return ok && isMember;
+}
+
+ScanResult RunSystemScan(SystemScanDetails* details) {
+    ScanResult result;
+    result.tool = L"system";
+    result.detailKey = L"scan.system";
+    result.canAutoRepair = false;
+    GetLocalTime(&result.checkedAt);
+
+    RTL_OSVERSIONINFOW version = {};
+    if (QueryWindowsVersion(&version)) {
+        details->majorVersion = version.dwMajorVersion;
+        details->minorVersion = version.dwMinorVersion;
+        details->buildNumber = version.dwBuildNumber;
+        details->isWindows10Or11 = IsSupportedWindowsVersion(version);
+    }
+
+    details->nativeArchitecture = NativeArchitecture();
+    details->isX64 = details->nativeArchitecture == PROCESSOR_ARCHITECTURE_AMD64;
+    details->isAdministrator = IsAdministrator();
+    details->mayRequireUacForInstall = !details->isAdministrator;
+
+    if (!details->isWindows10Or11) {
+        result.state = ToolState::Unsupported;
+        result.errorCode = L"UNSUPPORTED_WINDOWS_VERSION";
+    } else if (!details->isX64) {
+        result.state = ToolState::Unsupported;
+        result.errorCode = L"UNSUPPORTED_ARCHITECTURE";
+    } else {
+        result.state = ToolState::Ready;
+    }
+
+    if (details->majorVersion > 0) {
+        result.detectedVersion = WindowsDisplayVersion(*details) + L" " + ArchitectureName(details->nativeArchitecture);
+    } else {
+        result.detectedVersion = L"unknown Windows version " + ArchitectureName(details->nativeArchitecture);
+    }
+
+    return result;
 }
 
 void AppendLog(const std::wstring& message) {
@@ -309,8 +427,11 @@ void SavePreferences() {
 
 StartupChecks RunStartupChecks() {
     StartupChecks checks;
-    checks.supportedWindows = IsWindows10OrLater();
-    checks.x64 = IsX64Windows();
+    checks.systemResult = RunSystemScan(&checks.systemDetails);
+    checks.supportedWindows = checks.systemDetails.isWindows10Or11;
+    checks.x64 = checks.systemDetails.isX64;
+    checks.administrator = checks.systemDetails.isAdministrator;
+    checks.mayRequireUacForInstall = checks.systemDetails.mayRequireUacForInstall;
 
     wchar_t tempPath[MAX_PATH + 1] = {};
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
@@ -375,11 +496,31 @@ std::wstring CheckLine(const wchar_t* name, bool ok) {
     return std::wstring(L"  ") + name + L": " + (ok ? copy.supported : copy.unsupported) + L"\r\n";
 }
 
+std::wstring StateName(ToolState state) {
+    switch (state) {
+    case ToolState::Ready:
+        return L"ready";
+    case ToolState::Unsupported:
+        return L"unsupported";
+    case ToolState::Error:
+    default:
+        return L"error";
+    }
+}
+
 std::wstring BuildStatusText() {
     const Copy& copy = Text(g_state.preferences.locale);
     std::wstring text = std::wstring(copy.diagnosticsTitle) + L"\r\n";
+    text += L"  system: " + StateName(g_state.checks.systemResult.state);
+    if (!g_state.checks.systemResult.errorCode.empty()) {
+        text += L" (" + g_state.checks.systemResult.errorCode + L")";
+    }
+    text += L"\r\n";
+    text += L"  OS: " + g_state.checks.systemResult.detectedVersion + L"\r\n";
     text += CheckLine(L"Windows 10/11", g_state.checks.supportedWindows);
     text += CheckLine(L"x64", g_state.checks.x64);
+    text += std::wstring(L"  Permission: ") + (g_state.checks.administrator ? copy.administrator : copy.standardUser) + L"\r\n";
+    text += std::wstring(L"  UAC: ") + (g_state.checks.mayRequireUacForInstall ? copy.uacMayAppear : copy.uacNotExpected) + L"\r\n";
     text += CheckLine(L"Temp", g_state.checks.tempWritable);
     text += CheckLine(L"Config", g_state.checks.configWritable);
     text += CheckLine(L"Log", g_state.checks.logWritable);
