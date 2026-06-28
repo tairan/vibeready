@@ -19,6 +19,9 @@ if (-not $AppDataDir) {
     $AppDataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("VibeReadySmoke-" + [System.Guid]::NewGuid().ToString("N"))
 }
 New-Item -ItemType Directory -Path $AppDataDir -Force | Out-Null
+$configDir = Join-Path $AppDataDir "VibeReady"
+New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $configDir "config.ini") -Value @("[preferences]", "language=en", "telemetry=0") -Encoding ASCII
 
 Add-Type -TypeDefinition @"
 using System;
@@ -43,6 +46,9 @@ public static class VibeReadySmokeWin32 {
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wparam, IntPtr lparam);
 }
 "@
 
@@ -57,7 +63,7 @@ function Get-WindowClassName {
 function Get-WindowTextValue {
     param([System.IntPtr]$Handle)
 
-    $builder = [System.Text.StringBuilder]::new(1024)
+    $builder = [System.Text.StringBuilder]::new(8192)
     [void][VibeReadySmokeWin32]::GetWindowText($Handle, $builder, $builder.Capacity)
     return $builder.ToString()
 }
@@ -102,6 +108,49 @@ function Assert-Control {
     }
 }
 
+function Test-ContainsAny {
+    param(
+        [string]$Text,
+        [string[]]$Needles
+    )
+
+    foreach ($needle in $Needles) {
+        if ($Text.Contains($needle)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Assert-ScanResultsText {
+    param(
+        [string]$ButtonText,
+        [string]$StatusText
+    )
+
+    $resultTitles = @("Scan results")
+    $mustFixHeaders = @("Must fix")
+    $readyHeaders = @("Ready")
+    $manualHeaders = @("Cannot handle automatically")
+    $rescanLabels = @("Rescan environment")
+
+    if (-not (Test-ContainsAny -Text $StatusText -Needles $resultTitles)) {
+        throw "Status text does not contain a localized scan results title."
+    }
+    if (-not (Test-ContainsAny -Text $StatusText -Needles $mustFixHeaders)) {
+        throw "Status text does not contain a localized must-fix section."
+    }
+    if (-not (Test-ContainsAny -Text $StatusText -Needles $readyHeaders)) {
+        throw "Status text does not contain a localized ready section."
+    }
+    if (-not (Test-ContainsAny -Text $StatusText -Needles $manualHeaders)) {
+        throw "Status text does not contain a localized manual section."
+    }
+    if (-not (Test-ContainsAny -Text $ButtonText -Needles $rescanLabels)) {
+        throw "Primary button does not expose a localized rescan action."
+    }
+}
+
 function Wait-ControlText {
     param(
         [System.IntPtr]$Parent,
@@ -113,7 +162,10 @@ function Wait-ControlText {
         $allReady = $true
         foreach ($id in $Ids) {
             $handle = [VibeReadySmokeWin32]::GetDlgItem($Parent, $id)
-            if ($handle -eq [System.IntPtr]::Zero -or [string]::IsNullOrWhiteSpace((Get-WindowTextValue -Handle $handle))) {
+            if ($handle -eq [System.IntPtr]::Zero -or
+                -not [VibeReadySmokeWin32]::IsWindowVisible($handle) -or
+                -not [VibeReadySmokeWin32]::IsWindowEnabled($handle) -or
+                [string]::IsNullOrWhiteSpace((Get-WindowTextValue -Handle $handle))) {
                 $allReady = $false
                 break
             }
@@ -125,6 +177,13 @@ function Wait-ControlText {
     }
 
     throw "Timed out waiting for control text to become observable."
+}
+
+function Invoke-ButtonClick {
+    param([System.IntPtr]$Handle)
+
+    $bmClick = 0x00F5
+    [void][VibeReadySmokeWin32]::SendMessage($Handle, $bmClick, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
 }
 
 $process = $null
@@ -164,14 +223,15 @@ try {
     }
 
     if ($VerifyUiControls) {
-        Wait-ControlText -Parent $mainWindow -Ids @(102, 103, 104) -Deadline $deadline
-        $controls = @(
-            Assert-Control -Parent $mainWindow -Id 101 -ExpectedClass "ComboBox"
-            Assert-Control -Parent $mainWindow -Id 102 -ExpectedClass "Button" -RequireText
-            Assert-Control -Parent $mainWindow -Id 103 -ExpectedClass "Button" -RequireText
-            Assert-Control -Parent $mainWindow -Id 104 -ExpectedClass "Static" -RequireText
-        )
-        $result.UiControls = $controls
+        Wait-ControlText -Parent $mainWindow -Ids @(103) -Deadline $deadline
+        $primaryHandle = [VibeReadySmokeWin32]::GetDlgItem($mainWindow, 103)
+        $initialPrimary = Assert-Control -Parent $mainWindow -Id 103 -ExpectedClass "Button" -RequireText
+        Invoke-ButtonClick -Handle $primaryHandle
+        Wait-ControlText -Parent $mainWindow -Ids @(104) -Deadline ([DateTime]::UtcNow.AddSeconds($TimeoutSeconds))
+        $primaryButton = Assert-Control -Parent $mainWindow -Id 103 -ExpectedClass "Button" -RequireText
+        $statusText = Assert-Control -Parent $mainWindow -Id 104 -ExpectedClass "Static" -RequireText
+        Assert-ScanResultsText -ButtonText $primaryButton.Text -StatusText $statusText.Text
+        $result.UiControls = @($initialPrimary, $primaryButton, $statusText)
     }
 
     [pscustomobject]$result

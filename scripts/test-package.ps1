@@ -45,6 +45,16 @@ try {
     [pscustomobject]$result
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
-        Remove-Item -LiteralPath $testRoot -Recurse -Force
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $testRoot -Recurse -Force
+                break
+            } catch {
+                if ($attempt -eq 5) {
+                    throw
+                }
+                Start-Sleep -Milliseconds 500
+            }
+        }
     }
 }
