@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "issue": "CHI-14",
+  "tool_states": [
+    {
+      "id": "ready",
+      "category": "ready",
+      "description": "The required tool or capability is present and usable."
+    },
+    {
+      "id": "missing",
+      "category": "must_fix",
+      "description": "The tool is not found through supported detection paths or commands."
+    },
+    {
+      "id": "unusable",
+      "category": "must_fix",
+      "description": "The tool appears installed but cannot be launched, returns an invalid result, times out, or fails a required capability check."
+    },
+    {
+      "id": "unsupported",
+      "category": "cannot_handle_automatically",
+      "description": "The current OS, architecture, or feature surface is outside the MVP boundary."
+    },
+    {
+      "id": "error",
+      "category": "needs_attention",
+      "description": "The scan, repair, or verification step failed for a reason not represented by a more specific state."
+    }
+  ],
+  "error_codes": [
+    {
+      "code": "UNSUPPORTED_WINDOWS_VERSION",
+      "state": "unsupported",
+      "explanations": {
+        "en": "This Windows version is outside the supported Windows 10/11 x64 MVP range.",
+        "zh-CN": "当前 Windows 版本不在 MVP 支持的 Windows 10/11 x64 范围内。",
+        "ja": "この Windows バージョンは MVP が対応する Windows 10/11 x64 の範囲外です。"
+      }
+    },
+    {
+      "code": "UNSUPPORTED_ARCHITECTURE",
+      "state": "unsupported",
+      "explanations": {
+        "en": "This device is not running a supported x64 Windows architecture.",
+        "zh-CN": "当前设备不是受支持的 Windows x64 架构。",
+        "ja": "このデバイスは対応対象の Windows x64 アーキテクチャではありません。"
+      }
+    },
+    {
+      "code": "CONFIG_DIR_UNWRITABLE",
+      "state": "error",
+      "explanations": {
+        "en": "VibeReady cannot write its local configuration folder.",
+        "zh-CN": "VibeReady 无法写入本地配置目录。",
+        "ja": "VibeReady はローカル設定フォルダーに書き込めません。"
+      }
+    },
+    {
+      "code": "TEMP_DIR_UNWRITABLE",
+      "state": "error",
+      "explanations": {
+        "en": "VibeReady cannot write to the temporary folder needed for checks.",
+        "zh-CN": "VibeReady 无法写入检测所需的临时目录。",
+        "ja": "VibeReady は確認に必要な一時フォルダーに書き込めません。"
+      }
+    },
+    {
+      "code": "VSCODE_NOT_FOUND",
+      "state": "missing",
+      "explanations": {
+        "en": "VS Code was not found on this computer.",
+        "zh-CN": "未在这台电脑上找到 VS Code。",
+        "ja": "このコンピューターで VS Code が見つかりません。"
+      }
+    },
+    {
+      "code": "GIT_NOT_FOUND",
+      "state": "missing",
+      "explanations": {
+        "en": "Git was not found or cannot be started from this environment.",
+        "zh-CN": "未找到 Git，或当前环境无法启动 Git。",
+        "ja": "Git が見つからないか、この環境から起動できません。"
+      }
+    },
+    {
+      "code": "GIT_INIT_FAILED",
+      "state": "unusable",
+      "explanations": {
+        "en": "Git started, but git init did not complete successfully.",
+        "zh-CN": "Git 可以启动，但 git init 未成功完成。",
+        "ja": "Git は起動しましたが、git init が正常に完了しませんでした。"
+      }
+    },
+    {
+      "code": "NODE_NOT_FOUND",
+      "state": "missing",
+      "explanations": {
+        "en": "Node.js was not found or cannot be started from this environment.",
+        "zh-CN": "未找到 Node.js，或当前环境无法启动 Node.js。",
+        "ja": "Node.js が見つからないか、この環境から起動できません。"
+      }
+    },
+    {
+      "code": "NPM_NOT_FOUND",
+      "state": "missing",
+      "explanations": {
+        "en": "npm was not found or cannot be started from this environment.",
+        "zh-CN": "未找到 npm，或当前环境无法启动 npm。",
+        "ja": "npm が見つからないか、この環境から起動できません。"
+      }
+    },
+    {
+      "code": "TOOL_TIMEOUT",
+      "state": "unusable",
+      "explanations": {
+        "en": "A required tool did not respond before the timeout.",
+        "zh-CN": "必需工具未在超时时间内响应。",
+        "ja": "必須ツールがタイムアウトまでに応答しませんでした。"
+      }
+    },
+    {
+      "code": "WINGET_UNAVAILABLE",
+      "state": "unusable",
+      "explanations": {
+        "en": "WinGet is unavailable, so automatic installation cannot continue.",
+        "zh-CN": "WinGet 不可用，因此无法继续自动安装。",
+        "ja": "WinGet を利用できないため、自動インストールを続行できません。"
+      }
+    },
+    {
+      "code": "NETWORK_UNAVAILABLE",
+      "state": "error",
+      "explanations": {
+        "en": "The network check failed, but local scan results can still be shown.",
+        "zh-CN": "网络检测失败，但仍可展示本地扫描结果。",
+        "ja": "ネットワーク確認に失敗しましたが、ローカルスキャン結果は表示できます。"
+      }
+    },
+    {
+      "code": "USER_CANCELLED_UAC",
+      "state": "error",
+      "explanations": {
+        "en": "The administrator permission prompt was cancelled by the user.",
+        "zh-CN": "用户取消了管理员权限确认。",
+        "ja": "ユーザーが管理者権限の確認をキャンセルしました。"
+      }
+    },
+    {
+      "code": "INSTALL_FAILED",
+      "state": "error",
+      "explanations": {
+        "en": "The installation did not finish successfully.",
+        "zh-CN": "安装未成功完成。",
+        "ja": "インストールが正常に完了しませんでした。"
+      }
+    },
+    {
+      "code": "VERIFY_FAILED",
+      "state": "error",
+      "explanations": {
+        "en": "Verification failed after repair or setup.",
+        "zh-CN": "修复或设置后验证失败。",
+        "ja": "修復または設定後の検証に失敗しました。"
+      }
+    },
+    {
+      "code": "LOCAL_SERVER_FAILED",
+      "state": "error",
+      "explanations": {
+        "en": "The local Node test server did not start or did not respond.",
+        "zh-CN": "本地 Node 测试服务未启动或没有响应。",
+        "ja": "ローカル Node テストサーバーが起動しないか応答しませんでした。"
+      }
+    },
+    {
+      "code": "BROWSER_OPEN_FAILED",
+      "state": "error",
+      "explanations": {
+        "en": "The default browser could not be opened automatically.",
+        "zh-CN": "无法自动打开默认浏览器。",
+        "ja": "既定のブラウザーを自動で開けませんでした。"
+      }
+    },
+    {
+      "code": "VSCODE_OPEN_FAILED",
+      "state": "error",
+      "explanations": {
+        "en": "VS Code could not open the test project automatically.",
+        "zh-CN": "VS Code 无法自动打开测试项目。",
+        "ja": "VS Code でテストプロジェクトを自動で開けませんでした。"
+      }
+    },
+    {
+      "code": "UNKNOWN_ERROR",
+      "state": "error",
+      "explanations": {
+        "en": "An unexpected error occurred. Please retry or use the manual steps.",
+        "zh-CN": "发生未知错误。请重试或使用手动步骤。",
+        "ja": "予期しないエラーが発生しました。再試行するか手動手順を使ってください。"
+      }
+    }
+  ],
+  "telemetry": {
+    "max_core_events": 15,
+    "common_fields": [
+      "event_name",
+      "event_version",
+      "occurred_at",
+      "app_version",
+      "installation_id",
+      "session_id",
+      "os_name",
+      "os_major_version",
+      "architecture",
+      "language",
+      "consent_state"
+    ],
+    "disallowed_fields": [
+      "full_path",
+      "path",
+      "folder_path",
+      "username",
+      "account_name",
+      "environment_variable",
+      "env",
+      "project_name",
+      "project_content",
+      "source_code",
+      "prompt",
+      "file_content",
+      "directory_listing",
+      "email",
+      "secret",
+      "api_key",
+      "token",
+      "credential",
+      "cookie",
+      "authorization_header",
+      "raw_command_output",
+      "raw_log",
+      "crash_dump",
+      "screenshot",
+      "clipboard"
+    ],
+    "events": [
+      {
+        "name": "app_opened",
+        "trigger": "Process starts and the main window is created.",
+        "fields": ["launch_result"],
+        "privacy": "No executable path or command line."
+      },
+      {
+        "name": "startup_check_completed",
+        "trigger": "Startup self-check finishes.",
+        "fields": ["overall_state", "error_code", "duration_ms"],
+        "privacy": "No local folder paths or raw errors."
+      },
+      {
+        "name": "language_selected",
+        "trigger": "User changes or confirms language.",
+        "fields": ["selected_language", "source"],
+        "privacy": "Language code only."
+      },
+      {
+        "name": "telemetry_consent_changed",
+        "trigger": "User enables or disables anonymous telemetry.",
+        "fields": ["new_consent_state", "source"],
+        "privacy": "Consent state only. If disabled, this is the last allowed outbound event."
+      },
+      {
+        "name": "scan_started",
+        "trigger": "User starts the read-only environment scan.",
+        "fields": ["scan_id"],
+        "privacy": "Random scan id only."
+      },
+      {
+        "name": "tool_check_completed",
+        "trigger": "One tool or capability check finishes.",
+        "fields": ["scan_id", "tool", "state", "error_code", "duration_ms"],
+        "privacy": "No detected paths, command output, registry values, or project data."
+      },
+      {
+        "name": "scan_completed",
+        "trigger": "All read-only scan checks finish.",
+        "fields": ["scan_id", "overall_state", "missing_required_count", "unusable_required_count", "unsupported_count", "duration_ms"],
+        "privacy": "Counts and stable states only."
+      },
+      {
+        "name": "repair_plan_created",
+        "trigger": "A repair plan is generated from scan results.",
+        "fields": ["scan_id", "repairable_count", "manual_count", "requires_uac_possible"],
+        "privacy": "No package source beyond approved tool ids."
+      },
+      {
+        "name": "repair_started",
+        "trigger": "User confirms and starts an approved repair action.",
+        "fields": ["repair_id", "tool", "method"],
+        "privacy": "Method is winget or manual; no command line."
+      },
+      {
+        "name": "repair_step_completed",
+        "trigger": "One repair step finishes.",
+        "fields": ["repair_id", "tool", "result", "error_code", "duration_ms"],
+        "privacy": "No installer logs, raw output, or paths."
+      },
+      {
+        "name": "repair_completed",
+        "trigger": "Repair flow ends.",
+        "fields": ["repair_id", "overall_state", "completed_count", "failed_count", "duration_ms"],
+        "privacy": "Aggregated counts and states only."
+      },
+      {
+        "name": "verification_started",
+        "trigger": "Post-repair local verification starts.",
+        "fields": ["verification_id"],
+        "privacy": "Random verification id only."
+      },
+      {
+        "name": "verification_completed",
+        "trigger": "Local test project and service verification ends.",
+        "fields": ["verification_id", "overall_state", "error_code", "duration_ms"],
+        "privacy": "No project path, port can be omitted or bucketed."
+      },
+      {
+        "name": "ready_reached",
+        "trigger": "User reaches the Ready page after successful verification.",
+        "fields": ["verified_tool_count", "duration_from_open_ms"],
+        "privacy": "Counts and duration only."
+      }
+    ]
+  }
+}
