@@ -32,7 +32,7 @@ target_compile_definitions(VibeReady PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(VibeReady PRIVATE /W4 /permissive-)
+  target_compile_options(VibeReady PRIVATE /W4 /permissive- /utf-8)
 else()
   target_compile_options(VibeReady PRIVATE -Wall -Wextra -Wpedantic)
 endif()
