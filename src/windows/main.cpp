@@ -11,6 +11,10 @@ constexpr wchar_t kWindowClassName[] = L"VibeReadyMainWindow";
 constexpr wchar_t kWindowTitle[] = L"VibeReady";
 constexpr wchar_t kSingleInstanceMutex[] = L"Local\\VibeReadySingleInstance";
 constexpr UINT_PTR kStartupTimerId = 1;
+constexpr int kLanguageComboControlId = 101;
+constexpr int kTelemetryCheckControlId = 102;
+constexpr int kPrimaryButtonControlId = 103;
+constexpr int kStatusTextControlId = 104;
 
 enum class Locale {
     En,
@@ -244,6 +248,10 @@ struct AppState {
 
 AppState g_state;
 
+HMENU ControlId(int id) {
+    return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
+}
+
 std::wstring JoinPath(const std::wstring& left, const std::wstring& right) {
     if (left.empty()) {
         return right;
@@ -262,6 +270,29 @@ std::wstring GetKnownFolder(REFKNOWNFOLDERID folderId) {
     std::wstring path(rawPath);
     CoTaskMemFree(rawPath);
     return path;
+}
+
+std::wstring GetEnvironmentValue(const wchar_t* name) {
+    DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0) {
+        return L"";
+    }
+
+    std::wstring value(needed, L'\0');
+    DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return L"";
+    }
+    value.resize(written);
+    return value;
+}
+
+std::wstring GetAppDataRoot() {
+    std::wstring testOverride = GetEnvironmentValue(L"VIBEREADY_APPDATA_DIR");
+    if (!testOverride.empty()) {
+        return testOverride;
+    }
+    return GetKnownFolder(FOLDERID_LocalAppData);
 }
 
 bool WriteTextFile(const std::wstring& path, const std::wstring& content, bool append) {
@@ -630,7 +661,7 @@ StartupChecks RunStartupChecks() {
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
     checks.tempWritable = tempLength > 0 && tempLength < MAX_PATH && DirectoryWritable(tempPath);
 
-    std::wstring localAppData = GetKnownFolder(FOLDERID_LocalAppData);
+    std::wstring localAppData = GetAppDataRoot();
     checks.configDir = JoinPath(localAppData, L"VibeReady");
     if (!checks.configDir.empty()) {
         CreateDirectoryW(checks.configDir.c_str(), nullptr);
@@ -807,16 +838,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         g_state.window = hwnd;
         g_state.languageCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
             WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(101), g_state.instance, nullptr);
+            0, 0, 0, 0, hwnd, ControlId(kLanguageComboControlId), g_state.instance, nullptr);
         g_state.telemetryCheck = CreateWindowExW(0, L"BUTTON", nullptr,
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(102), g_state.instance, nullptr);
+            0, 0, 0, 0, hwnd, ControlId(kTelemetryCheckControlId), g_state.instance, nullptr);
         g_state.primaryButton = CreateWindowExW(0, L"BUTTON", nullptr,
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(103), g_state.instance, nullptr);
+            0, 0, 0, 0, hwnd, ControlId(kPrimaryButtonControlId), g_state.instance, nullptr);
         g_state.statusText = CreateWindowExW(0, L"STATIC", nullptr,
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(104), g_state.instance, nullptr);
+            0, 0, 0, 0, hwnd, ControlId(kStatusTextControlId), g_state.instance, nullptr);
 
         AddLanguageItems(g_state.languageCombo);
         SetTimer(hwnd, kStartupTimerId, 50, nullptr);
@@ -843,7 +874,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         return 0;
 
     case WM_COMMAND:
-        if (LOWORD(wparam) == 101 && HIWORD(wparam) == CBN_SELCHANGE) {
+        if (LOWORD(wparam) == kLanguageComboControlId && HIWORD(wparam) == CBN_SELCHANGE) {
             int index = static_cast<int>(SendMessageW(g_state.languageCombo, CB_GETCURSEL, 0, 0));
             g_state.preferences.locale = LocaleFromIndex(index);
             SavePreferences();
@@ -851,14 +882,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             RefreshUi();
             return 0;
         }
-        if (LOWORD(wparam) == 102 && HIWORD(wparam) == BN_CLICKED) {
+        if (LOWORD(wparam) == kTelemetryCheckControlId && HIWORD(wparam) == BN_CLICKED) {
             g_state.preferences.telemetryAllowed = SendMessageW(g_state.telemetryCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             SavePreferences();
             AppendLog(g_state.preferences.telemetryAllowed ? L"telemetry consent allowed" : L"telemetry consent declined");
             RefreshUi();
             return 0;
         }
-        if (LOWORD(wparam) == 103 && HIWORD(wparam) == BN_CLICKED) {
+        if (LOWORD(wparam) == kPrimaryButtonControlId && HIWORD(wparam) == BN_CLICKED) {
             AppendLog(L"primary environment check entry clicked");
             MessageBoxW(hwnd, Text(g_state.preferences.locale).trustNote, kWindowTitle, MB_ICONINFORMATION | MB_OK);
             return 0;
