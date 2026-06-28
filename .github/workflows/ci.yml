@@ -6,6 +6,7 @@ on:
       - main
       - master
       - "tairanwang/**"
+      - "codex/**"
   pull_request:
     branches:
       - main
@@ -32,29 +33,23 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $zipPath = "dist/VibeReady-Windows-x64.zip"
-          if (-not (Test-Path $zipPath)) {
-            throw "Missing release ZIP: $zipPath"
+          $zipPath = Join-Path $PWD "dist\VibeReady-Windows-x64.zip"
+          if (-not (Test-Path -LiteralPath $zipPath)) {
+            throw "Missing ZIP: $zipPath"
           }
 
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
-          try {
-            $entries = $zip.Entries | ForEach-Object { $_.FullName }
-            $required = @(
-              "VibeReady.exe",
-              "README.txt",
-              "THIRD-PARTY-NOTICES.txt"
-            )
+          $extractPath = Join-Path $PWD "dist\ci-zip-check"
+          if (Test-Path -LiteralPath $extractPath) {
+            Remove-Item -LiteralPath $extractPath -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath
 
-            foreach ($name in $required) {
-              if ($entries -notcontains $name) {
-                throw "Release ZIP is missing required file: $name"
-              }
+          $required = @("VibeReady.exe", "README.txt", "THIRD-PARTY-NOTICES.txt")
+          foreach ($item in $required) {
+            $path = Join-Path $extractPath $item
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "ZIP is missing $item"
             }
-          }
-          finally {
-            $zip.Dispose()
           }
 
       - name: Upload release ZIP
