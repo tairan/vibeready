@@ -102,6 +102,31 @@ function Assert-Control {
     }
 }
 
+function Wait-ControlText {
+    param(
+        [System.IntPtr]$Parent,
+        [int[]]$Ids,
+        [DateTime]$Deadline
+    )
+
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        $allReady = $true
+        foreach ($id in $Ids) {
+            $handle = [VibeReadySmokeWin32]::GetDlgItem($Parent, $id)
+            if ($handle -eq [System.IntPtr]::Zero -or [string]::IsNullOrWhiteSpace((Get-WindowTextValue -Handle $handle))) {
+                $allReady = $false
+                break
+            }
+        }
+        if ($allReady) {
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    throw "Timed out waiting for control text to become observable."
+}
+
 $process = $null
 try {
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -139,6 +164,7 @@ try {
     }
 
     if ($VerifyUiControls) {
+        Wait-ControlText -Parent $mainWindow -Ids @(102, 103, 104) -Deadline $deadline
         $controls = @(
             Assert-Control -Parent $mainWindow -Id 101 -ExpectedClass "ComboBox"
             Assert-Control -Parent $mainWindow -Id 102 -ExpectedClass "Button" -RequireText
