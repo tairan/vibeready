@@ -25,6 +25,7 @@ enum class Locale {
 enum class ToolState {
     Ready,
     Missing,
+    Unusable,
     Unsupported,
     Error,
 };
@@ -60,6 +61,15 @@ struct VscodeScanResult {
     SYSTEMTIME checkedAt = {};
 };
 
+struct GitScanResult {
+    ToolState state = ToolState::Missing;
+    std::wstring errorCode = L"GIT_NOT_FOUND";
+    bool versionCommandSucceeded = false;
+    bool initSucceeded = false;
+    bool canAutoRepair = true;
+    SYSTEMTIME checkedAt = {};
+};
+
 struct Copy {
     const wchar_t* languageName;
     const wchar_t* startupTitle;
@@ -84,6 +94,8 @@ struct Copy {
     const wchar_t* uacNotExpected;
     const wchar_t* cliAvailable;
     const wchar_t* cliNotRequired;
+    const wchar_t* gitVersionOk;
+    const wchar_t* gitInitOk;
 };
 
 const Copy& Text(Locale locale) {
@@ -110,7 +122,9 @@ const Copy& Text(Locale locale) {
         L"Future installs may ask for administrator confirmation.",
         L"Administrator confirmation is not expected for the current scan.",
         L"code command available",
-        L"code command not required for MVP readiness"
+        L"code command not required for MVP readiness",
+        L"git --version passed",
+        L"git init passed"
     };
     static const Copy zh = {
         L"简体中文",
@@ -135,7 +149,9 @@ const Copy& Text(Locale locale) {
         L"后续安装可能会要求管理员确认。",
         L"当前扫描预计不会要求管理员确认。",
         L"code 命令可用",
-        L"MVP 就绪不要求 code 命令可用"
+        L"MVP 就绪不要求 code 命令可用",
+        L"git --version 已通过",
+        L"git init 已通过"
     };
     static const Copy ja = {
         L"日本語",
@@ -160,7 +176,9 @@ const Copy& Text(Locale locale) {
         L"今後のインストールでは管理者確認が表示される可能性があります。",
         L"現在のスキャンでは管理者確認は不要です。",
         L"code コマンドを利用できます",
-        L"MVP の準備完了に code コマンドは必須ではありません"
+        L"MVP の準備完了に code コマンドは必須ではありません",
+        L"git --version に成功しました",
+        L"git init に成功しました"
     };
 
     switch (locale) {
@@ -218,6 +236,7 @@ struct StartupChecks {
     bool administrator = false;
     bool mayRequireUacForInstall = true;
     VscodeScanResult vscode;
+    GitScanResult git;
     bool tempWritable = false;
     bool configWritable = false;
     bool logWritable = false;
@@ -403,6 +422,10 @@ bool SearchCommandOnPath(const wchar_t* command) {
     return needed > 0;
 }
 
+bool CommandExists(const wchar_t* command) {
+    return SearchCommandOnPath(command);
+}
+
 std::wstring VscodeVersionOrFallback(const std::wstring& version) {
     return version.empty() ? L"installed" : version;
 }
@@ -498,6 +521,154 @@ VscodeScanResult RunVscodeScan() {
         return result;
     }
 
+    return result;
+}
+
+bool DeleteDirectoryTree(const std::wstring& dir) {
+    if (dir.empty()) {
+        return false;
+    }
+
+    std::wstring search = JoinPath(dir, L"*");
+    WIN32_FIND_DATAW data = {};
+    HANDLE find = FindFirstFileW(search.c_str(), &data);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring name(data.cFileName);
+            if (name == L"." || name == L"..") {
+                continue;
+            }
+
+            std::wstring child = JoinPath(dir, name);
+            if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                DeleteDirectoryTree(child);
+            } else {
+                SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(child.c_str());
+            }
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+    }
+
+    SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
+    return RemoveDirectoryW(dir.c_str()) != 0;
+}
+
+bool CreateOwnedTempDirectory(std::wstring* dir) {
+    wchar_t tempPath[MAX_PATH + 1] = {};
+    DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
+    if (tempLength == 0 || tempLength >= MAX_PATH) {
+        return false;
+    }
+
+    wchar_t tempFile[MAX_PATH + 1] = {};
+    if (GetTempFileNameW(tempPath, L"vrg", 0, tempFile) == 0) {
+        return false;
+    }
+    DeleteFileW(tempFile);
+    if (!CreateDirectoryW(tempFile, nullptr)) {
+        return false;
+    }
+
+    *dir = tempFile;
+    return true;
+}
+
+enum class ProcessRunStatus {
+    Started,
+    NotStarted,
+    TimedOut,
+};
+
+ProcessRunStatus RunProcessWithTimeout(const std::wstring& commandLine, const std::wstring& workingDir, DWORD timeoutMs, DWORD* exitCode) {
+    std::wstring mutableCommand = commandLine;
+
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process = {};
+    BOOL created = CreateProcessW(
+        nullptr,
+        mutableCommand.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        workingDir.empty() ? nullptr : workingDir.c_str(),
+        &startup,
+        &process);
+
+    if (!created) {
+        return ProcessRunStatus::NotStarted;
+    }
+
+    DWORD waitResult = WaitForSingleObject(process.hProcess, timeoutMs);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(process.hProcess, 1);
+        WaitForSingleObject(process.hProcess, 1000);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return ProcessRunStatus::TimedOut;
+    }
+
+    DWORD code = 1;
+    GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    *exitCode = code;
+    return ProcessRunStatus::Started;
+}
+
+GitScanResult RunGitScan() {
+    constexpr DWORD kToolTimeoutMs = 5000;
+    GitScanResult result;
+    GetLocalTime(&result.checkedAt);
+
+    if (!CommandExists(L"git.exe")) {
+        result.state = ToolState::Missing;
+        result.errorCode = L"GIT_NOT_FOUND";
+        return result;
+    }
+
+    DWORD versionExitCode = 1;
+    ProcessRunStatus versionStatus = RunProcessWithTimeout(L"git.exe --version", L"", kToolTimeoutMs, &versionExitCode);
+    if (versionStatus == ProcessRunStatus::TimedOut) {
+        result.state = ToolState::Unusable;
+        result.errorCode = L"TOOL_TIMEOUT";
+        return result;
+    }
+    if (versionStatus != ProcessRunStatus::Started || versionExitCode != 0) {
+        result.state = ToolState::Missing;
+        result.errorCode = L"GIT_NOT_FOUND";
+        return result;
+    }
+    result.versionCommandSucceeded = true;
+
+    std::wstring tempDir;
+    if (!CreateOwnedTempDirectory(&tempDir)) {
+        result.state = ToolState::Error;
+        result.errorCode = L"TEMP_DIR_UNWRITABLE";
+        return result;
+    }
+
+    DWORD initExitCode = 1;
+    ProcessRunStatus initStatus = RunProcessWithTimeout(L"git.exe init", tempDir, kToolTimeoutMs, &initExitCode);
+    DeleteDirectoryTree(tempDir);
+    if (initStatus == ProcessRunStatus::TimedOut) {
+        result.state = ToolState::Unusable;
+        result.errorCode = L"TOOL_TIMEOUT";
+        return result;
+    }
+    if (initStatus != ProcessRunStatus::Started || initExitCode != 0) {
+        result.state = ToolState::Unusable;
+        result.errorCode = L"GIT_INIT_FAILED";
+        return result;
+    }
+
+    result.state = ToolState::Ready;
+    result.errorCode.clear();
+    result.initSucceeded = true;
+    result.canAutoRepair = false;
     return result;
 }
 
@@ -656,6 +827,7 @@ StartupChecks RunStartupChecks() {
     checks.administrator = checks.systemDetails.isAdministrator;
     checks.mayRequireUacForInstall = checks.systemDetails.mayRequireUacForInstall;
     checks.vscode = RunVscodeScan();
+    checks.git = RunGitScan();
 
     wchar_t tempPath[MAX_PATH + 1] = {};
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
@@ -726,6 +898,8 @@ std::wstring StateName(ToolState state) {
         return L"ready";
     case ToolState::Missing:
         return L"missing";
+    case ToolState::Unusable:
+        return L"unusable";
     case ToolState::Unsupported:
         return L"unsupported";
     case ToolState::Error:
@@ -753,6 +927,22 @@ std::wstring VscodeStatusText() {
     return text;
 }
 
+std::wstring GitStatusText() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    const GitScanResult& result = g_state.checks.git;
+    std::wstring text = L"  Git: ";
+    if (result.state == ToolState::Ready) {
+        text += copy.supported;
+    } else {
+        text += copy.unsupported;
+        text += L" (" + result.errorCode + L")";
+    }
+    text += L"\r\n";
+    text += std::wstring(L"  ") + copy.gitVersionOk + L": " + (result.versionCommandSucceeded ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"  ") + copy.gitInitOk + L": " + (result.initSucceeded ? copy.supported : copy.unsupported) + L"\r\n";
+    return text;
+}
+
 std::wstring BuildStatusText() {
     const Copy& copy = Text(g_state.preferences.locale);
     std::wstring text = std::wstring(copy.diagnosticsTitle) + L"\r\n";
@@ -767,6 +957,7 @@ std::wstring BuildStatusText() {
     text += std::wstring(L"  Permission: ") + (g_state.checks.administrator ? copy.administrator : copy.standardUser) + L"\r\n";
     text += std::wstring(L"  UAC: ") + (g_state.checks.mayRequireUacForInstall ? copy.uacMayAppear : copy.uacNotExpected) + L"\r\n";
     text += VscodeStatusText();
+    text += GitStatusText();
     text += CheckLine(L"Temp", g_state.checks.tempWritable);
     text += CheckLine(L"Config", g_state.checks.configWritable);
     text += CheckLine(L"Log", g_state.checks.logWritable);
