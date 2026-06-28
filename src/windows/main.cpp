@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,7 @@ enum class Locale {
 
 enum class ToolState {
     Ready,
+    Missing,
     Unsupported,
     Error,
 };
@@ -44,6 +46,16 @@ struct SystemScanDetails {
     bool mayRequireUacForInstall = true;
 };
 
+struct VscodeScanResult {
+    ToolState state = ToolState::Missing;
+    std::wstring errorCode = L"VSCODE_NOT_FOUND";
+    std::wstring detectedVersion;
+    std::wstring detectionSource;
+    bool cliAvailable = false;
+    bool canAutoRepair = true;
+    SYSTEMTIME checkedAt = {};
+};
+
 struct Copy {
     const wchar_t* languageName;
     const wchar_t* startupTitle;
@@ -66,6 +78,8 @@ struct Copy {
     const wchar_t* standardUser;
     const wchar_t* uacMayAppear;
     const wchar_t* uacNotExpected;
+    const wchar_t* cliAvailable;
+    const wchar_t* cliNotRequired;
 };
 
 const Copy& Text(Locale locale) {
@@ -90,7 +104,9 @@ const Copy& Text(Locale locale) {
         L"Administrator",
         L"Standard user",
         L"Future installs may ask for administrator confirmation.",
-        L"Administrator confirmation is not expected for the current scan."
+        L"Administrator confirmation is not expected for the current scan.",
+        L"code command available",
+        L"code command not required for MVP readiness"
     };
     static const Copy zh = {
         L"简体中文",
@@ -113,7 +129,9 @@ const Copy& Text(Locale locale) {
         L"管理员",
         L"标准用户",
         L"后续安装可能会要求管理员确认。",
-        L"当前扫描预计不会要求管理员确认。"
+        L"当前扫描预计不会要求管理员确认。",
+        L"code 命令可用",
+        L"MVP 就绪不要求 code 命令可用"
     };
     static const Copy ja = {
         L"日本語",
@@ -136,7 +154,9 @@ const Copy& Text(Locale locale) {
         L"管理者",
         L"標準ユーザー",
         L"今後のインストールでは管理者確認が表示される可能性があります。",
-        L"現在のスキャンでは管理者確認は不要です。"
+        L"現在のスキャンでは管理者確認は不要です。",
+        L"code コマンドを利用できます",
+        L"MVP の準備完了に code コマンドは必須ではありません"
     };
 
     switch (locale) {
@@ -193,6 +213,7 @@ struct StartupChecks {
     bool x64 = false;
     bool administrator = false;
     bool mayRequireUacForInstall = true;
+    VscodeScanResult vscode;
     bool tempWritable = false;
     bool configWritable = false;
     bool logWritable = false;
@@ -276,6 +297,177 @@ bool DirectoryWritable(const std::wstring& dir) {
     CloseHandle(file);
     DeleteFileW(probe.c_str());
     return true;
+}
+
+std::wstring ToLower(std::wstring value) {
+    for (wchar_t& ch : value) {
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    return value;
+}
+
+bool ContainsCaseInsensitive(const std::wstring& value, const std::wstring& needle) {
+    return ToLower(value).find(ToLower(needle)) != std::wstring::npos;
+}
+
+bool FileExists(const std::wstring& path) {
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring EnvironmentPath(const wchar_t* name) {
+    DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
+    if (needed == 0) {
+        return L"";
+    }
+
+    std::wstring value(needed, L'\0');
+    DWORD written = GetEnvironmentVariableW(name, value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return L"";
+    }
+    value.resize(written);
+    return value;
+}
+
+std::wstring ExpandRegistryString(const std::wstring& value) {
+    DWORD needed = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
+    if (needed == 0) {
+        return value;
+    }
+
+    std::wstring expanded(needed, L'\0');
+    DWORD written = ExpandEnvironmentStringsW(value.c_str(), expanded.data(), needed);
+    if (written == 0 || written > needed) {
+        return value;
+    }
+    expanded.resize(written - 1);
+    return expanded;
+}
+
+bool QueryRegistryString(HKEY key, const wchar_t* valueName, std::wstring* value) {
+    DWORD type = 0;
+    DWORD bytes = 0;
+    LONG sizeResult = RegQueryValueExW(key, valueName, nullptr, &type, nullptr, &bytes);
+    if (sizeResult != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ) || bytes == 0) {
+        return false;
+    }
+
+    std::wstring buffer(bytes / sizeof(wchar_t), L'\0');
+    LONG readResult = RegQueryValueExW(key, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(buffer.data()), &bytes);
+    if (readResult != ERROR_SUCCESS) {
+        return false;
+    }
+
+    while (!buffer.empty() && buffer.back() == L'\0') {
+        buffer.pop_back();
+    }
+
+    *value = type == REG_EXPAND_SZ ? ExpandRegistryString(buffer) : buffer;
+    return !value->empty();
+}
+
+bool SearchCommandOnPath(const wchar_t* command) {
+    DWORD needed = SearchPathW(nullptr, command, nullptr, 0, nullptr, nullptr);
+    return needed > 0;
+}
+
+std::wstring VscodeVersionOrFallback(const std::wstring& version) {
+    return version.empty() ? L"installed" : version;
+}
+
+bool DetectVscodeFromCommonPaths(VscodeScanResult* result) {
+    std::vector<std::wstring> candidates;
+    std::wstring localAppData = EnvironmentPath(L"LOCALAPPDATA");
+    std::wstring programFiles = EnvironmentPath(L"ProgramFiles");
+    std::wstring programFilesX86 = EnvironmentPath(L"ProgramFiles(x86)");
+
+    if (!localAppData.empty()) {
+        candidates.push_back(JoinPath(localAppData, L"Programs\\Microsoft VS Code\\Code.exe"));
+    }
+    if (!programFiles.empty()) {
+        candidates.push_back(JoinPath(programFiles, L"Microsoft VS Code\\Code.exe"));
+    }
+    if (!programFilesX86.empty()) {
+        candidates.push_back(JoinPath(programFilesX86, L"Microsoft VS Code\\Code.exe"));
+    }
+
+    for (const std::wstring& candidate : candidates) {
+        if (FileExists(candidate)) {
+            result->state = ToolState::Ready;
+            result->errorCode.clear();
+            result->detectedVersion = L"installed";
+            result->detectionSource = L"common install path";
+            result->canAutoRepair = false;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool DetectVscodeFromUninstallRegistry(VscodeScanResult* result) {
+    const HKEY roots[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    const wchar_t* uninstallPaths[] = {
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    };
+
+    for (HKEY root : roots) {
+        for (const wchar_t* uninstallPath : uninstallPaths) {
+            HKEY uninstallKey = nullptr;
+            if (RegOpenKeyExW(root, uninstallPath, 0, KEY_READ, &uninstallKey) != ERROR_SUCCESS) {
+                continue;
+            }
+
+            DWORD index = 0;
+            wchar_t subkeyName[256] = {};
+            DWORD subkeyLength = ARRAYSIZE(subkeyName);
+            while (RegEnumKeyExW(uninstallKey, index, subkeyName, &subkeyLength, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                HKEY appKey = nullptr;
+                if (RegOpenKeyExW(uninstallKey, subkeyName, 0, KEY_READ, &appKey) == ERROR_SUCCESS) {
+                    std::wstring displayName;
+                    if (QueryRegistryString(appKey, L"DisplayName", &displayName) &&
+                        ContainsCaseInsensitive(displayName, L"Visual Studio Code")) {
+                        std::wstring displayVersion;
+                        QueryRegistryString(appKey, L"DisplayVersion", &displayVersion);
+                        result->state = ToolState::Ready;
+                        result->errorCode.clear();
+                        result->detectedVersion = VscodeVersionOrFallback(displayVersion);
+                        result->detectionSource = L"Windows uninstall registry";
+                        result->canAutoRepair = false;
+                        RegCloseKey(appKey);
+                        RegCloseKey(uninstallKey);
+                        return true;
+                    }
+                    RegCloseKey(appKey);
+                }
+
+                ++index;
+                subkeyLength = ARRAYSIZE(subkeyName);
+                subkeyName[0] = L'\0';
+            }
+
+            RegCloseKey(uninstallKey);
+        }
+    }
+
+    return false;
+}
+
+VscodeScanResult RunVscodeScan() {
+    VscodeScanResult result;
+    GetLocalTime(&result.checkedAt);
+    result.cliAvailable = SearchCommandOnPath(L"code.cmd") || SearchCommandOnPath(L"code.exe");
+
+    if (DetectVscodeFromCommonPaths(&result)) {
+        return result;
+    }
+    if (DetectVscodeFromUninstallRegistry(&result)) {
+        return result;
+    }
+
+    return result;
 }
 
 bool QueryWindowsVersion(RTL_OSVERSIONINFOW* version) {
@@ -432,6 +624,7 @@ StartupChecks RunStartupChecks() {
     checks.x64 = checks.systemDetails.isX64;
     checks.administrator = checks.systemDetails.isAdministrator;
     checks.mayRequireUacForInstall = checks.systemDetails.mayRequireUacForInstall;
+    checks.vscode = RunVscodeScan();
 
     wchar_t tempPath[MAX_PATH + 1] = {};
     DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
@@ -500,12 +693,33 @@ std::wstring StateName(ToolState state) {
     switch (state) {
     case ToolState::Ready:
         return L"ready";
+    case ToolState::Missing:
+        return L"missing";
     case ToolState::Unsupported:
         return L"unsupported";
     case ToolState::Error:
     default:
         return L"error";
     }
+}
+
+std::wstring VscodeStatusText() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    const VscodeScanResult& result = g_state.checks.vscode;
+    std::wstring text = L"  VS Code: ";
+    if (result.state == ToolState::Ready) {
+        text += copy.supported;
+        text += L" (" + result.detectionSource + L")";
+        if (!result.detectedVersion.empty()) {
+            text += L", " + result.detectedVersion;
+        }
+    } else {
+        text += copy.unsupported;
+        text += L" (" + result.errorCode + L")";
+    }
+    text += L"\r\n";
+    text += std::wstring(L"  VS Code CLI: ") + (result.cliAvailable ? copy.cliAvailable : copy.cliNotRequired) + L"\r\n";
+    return text;
 }
 
 std::wstring BuildStatusText() {
@@ -521,6 +735,7 @@ std::wstring BuildStatusText() {
     text += CheckLine(L"x64", g_state.checks.x64);
     text += std::wstring(L"  Permission: ") + (g_state.checks.administrator ? copy.administrator : copy.standardUser) + L"\r\n";
     text += std::wstring(L"  UAC: ") + (g_state.checks.mayRequireUacForInstall ? copy.uacMayAppear : copy.uacNotExpected) + L"\r\n";
+    text += VscodeStatusText();
     text += CheckLine(L"Temp", g_state.checks.tempWritable);
     text += CheckLine(L"Config", g_state.checks.configWritable);
     text += CheckLine(L"Log", g_state.checks.logWritable);
