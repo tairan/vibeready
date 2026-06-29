@@ -20,9 +20,12 @@ endif()
 
 add_executable(VibeReady WIN32
   src/windows/main.cpp
+  src/windows/ui_foundation.cpp
 )
 
 target_link_libraries(VibeReady PRIVATE
+  d2d1
+  dwrite
   winhttp
 )
 
