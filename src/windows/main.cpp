@@ -2,6 +2,9 @@
 #include <winhttp.h>
 #include <shlobj.h>
 
+#include "ui_foundation.h"
+
+#include <algorithm>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -13,10 +16,24 @@ constexpr wchar_t kWindowTitle[] = L"VibeReady";
 constexpr wchar_t kSingleInstanceMutex[] = L"Local\\VibeReadySingleInstance";
 constexpr UINT_PTR kStartupTimerId = 1;
 constexpr UINT_PTR kScanTimerId = 2;
-constexpr int kLanguageComboControlId = 101;
-constexpr int kTelemetryCheckControlId = 102;
-constexpr int kPrimaryButtonControlId = 103;
-constexpr int kStatusTextControlId = 104;
+
+enum class AppRoute {
+    Startup,
+    LanguageTelemetry,
+    Home,
+    Scanning,
+    ScanResults,
+};
+
+enum class UiControl {
+    None,
+    LanguageSelect,
+    TelemetryToggle,
+    ThemeToggle,
+    PrimaryButton,
+    SettingsButton,
+    TechnicalDetailsButton,
+};
 
 enum class Locale {
     En,
@@ -30,14 +47,6 @@ enum class ToolState {
     Unusable,
     Unsupported,
     Error,
-};
-
-enum class AppScreen {
-    Startup,
-    LanguageTelemetry,
-    Home,
-    Scanning,
-    ScanResults,
 };
 
 struct ScanResult {
@@ -109,19 +118,32 @@ struct Copy {
     const wchar_t* languageName;
     const wchar_t* startupTitle;
     const wchar_t* startupBody;
-    const wchar_t* startupStatus;
-    const wchar_t* languageTelemetryTitle;
-    const wchar_t* languageTelemetryBody;
-    const wchar_t* savePreferencesAction;
-    const wchar_t* telemetryHelp;
-    const wchar_t* homeTitle;
+    const wchar_t* startupHint;
     const wchar_t* homeBody;
     const wchar_t* trustNote;
     const wchar_t* primaryAction;
+    const wchar_t* checkingAction;
+    const wchar_t* languageLabel;
+    const wchar_t* languageTelemetryTitle;
+    const wchar_t* languageTelemetryBody;
+    const wchar_t* savePreferencesAction;
+    const wchar_t* settingsAction;
+    const wchar_t* themeLabel;
+    const wchar_t* toggleOn;
+    const wchar_t* toggleOff;
+    const wchar_t* scanningTitle;
+    const wchar_t* scanningBody;
+    const wchar_t* scanResultsTitle;
+    const wchar_t* scanResultsBody;
+    const wchar_t* scanResultsAction;
+    const wchar_t* technicalDetailsAction;
+    const wchar_t* technicalDetailsLabel;
+    const wchar_t* hideTechnicalDetailsAction;
     const wchar_t* telemetryLabel;
     const wchar_t* telemetryOn;
     const wchar_t* telemetryOff;
     const wchar_t* settingsSaved;
+    const wchar_t* unsupportedLanguageTelemetry;
     const wchar_t* diagnosticsTitle;
     const wchar_t* supported;
     const wchar_t* unsupported;
@@ -137,10 +159,6 @@ struct Copy {
     const wchar_t* cliNotRequired;
     const wchar_t* gitVersionOk;
     const wchar_t* gitInitOk;
-    const wchar_t* resultTitle;
-    const wchar_t* scanningTitle;
-    const wchar_t* scanningBody;
-    const wchar_t* scanningStatus;
     const wchar_t* readyToStart;
     const wchar_t* missingCountPrefix;
     const wchar_t* missingCountSuffix;
@@ -168,19 +186,32 @@ const Copy& Text(Locale locale) {
         L"English",
         L"Starting VibeReady",
         L"Checking whether this Windows device can run the portable client.",
-        L"Loading local preferences and checking Windows support.",
-        L"Language and privacy",
-        L"Choose the interface language and decide whether VibeReady may send anonymous product telemetry.",
-        L"Save preferences",
-        L"Telemetry is optional, anonymous, and never blocks the local check.",
-        L"VibeReady",
+        L"Preparing the first-run setup flow.",
         L"Check this device before starting web vibe coding work.",
         L"Scan phase is read-only. VibeReady will not install tools or modify the system until you confirm a fix.",
         L"Check web vibe coding environment",
+        L"Checking...",
+        L"Language",
+        L"Language and telemetry",
+        L"Choose the UI language and telemetry preference.",
+        L"Save preferences",
+        L"Settings",
+        L"Dark theme",
+        L"On",
+        L"Off",
+        L"Checking environment",
+        L"VibeReady is checking readiness step by step.",
+        L"Scan results",
+        L"Review what is ready and what still needs attention.",
+        L"Back to home",
+        L"Show technical details",
+        L"Technical details",
+        L"Hide technical details",
         L"Send anonymous usage data",
         L"Telemetry: allowed",
         L"Telemetry: off",
         L"Preferences saved.",
+        L"Please set both language and telemetry preference first.",
         L"Startup checks",
         L"Supported",
         L"Needs attention",
@@ -196,10 +227,6 @@ const Copy& Text(Locale locale) {
         L"code command not required for MVP readiness",
         L"git --version passed",
         L"git init passed",
-        L"Scan results",
-        L"Checking environment",
-        L"VibeReady is checking Windows support, permissions, VS Code, Git, Node.js, npm, WinGet, and network access.",
-        L"This usually takes less than one minute.",
         L"Everything required is ready. You can start web vibe coding.",
         L"You still need to fix ",
         L" item(s) before web vibe coding is ready.",
@@ -225,19 +252,32 @@ const Copy& Text(Locale locale) {
         L"简体中文",
         L"正在启动 VibeReady",
         L"正在检查这台 Windows 设备是否可以运行免安装客户端。",
-        L"正在加载本地偏好设置，并检查 Windows 支持状态。",
-        L"语言与隐私",
-        L"选择界面语言，并决定 VibeReady 是否可以发送匿名产品遥测。",
-        L"保存偏好设置",
-        L"遥测是可选、匿名的，不会阻塞本地检查。",
-        L"VibeReady",
+        L"正在准备首次配置流程。",
         L"开始网页 vibe coding 工作前，先检查这台设备。",
         L"扫描阶段只读。除非你确认修复，VibeReady 不会安装工具或修改系统。",
         L"检查网页 vibe coding 环境",
+        L"正在检查...",
+        L"语言",
+        L"语言与遥测",
+        L"先选择界面语言，再确认是否允许匿名遥测。",
+        L"保存偏好设置",
+        L"设置",
+        L"深色主题",
+        L"开启",
+        L"关闭",
+        L"正在检查环境",
+        L"VibeReady 正在按步骤检查环境。",
+        L"扫描结果",
+        L"查看本机环境可用性，并给出可执行的下一步。",
+        L"返回主页",
+        L"查看技术详情",
+        L"技术详情",
+        L"隐藏技术详情",
         L"发送匿名使用数据",
         L"遥测：允许",
         L"遥测：关闭",
         L"偏好设置已保存。",
+        L"请先保存语言与遥测偏好。",
         L"启动自检",
         L"支持",
         L"需要注意",
@@ -253,10 +293,6 @@ const Copy& Text(Locale locale) {
         L"MVP 就绪不要求 code 命令可用",
         L"git --version 已通过",
         L"git init 已通过",
-        L"扫描结果",
-        L"正在检查环境",
-        L"VibeReady 正在检查 Windows 支持、权限、VS Code、Git、Node.js、npm、WinGet 和网络连接。",
-        L"通常不到一分钟。",
         L"必需项已就绪，你可以开始网页 vibe coding。",
         L"还差 ",
         L" 项，你就可以开始网页 vibe coding。",
@@ -282,19 +318,32 @@ const Copy& Text(Locale locale) {
         L"日本語",
         L"VibeReady を起動中",
         L"この Windows デバイスでポータブルクライアントを実行できるか確認しています。",
-        L"ローカル設定と Windows 対応状況を読み込んでいます。",
-        L"言語とプライバシー",
-        L"UI 言語と、VibeReady が匿名の製品テレメトリーを送信してよいかを選択します。",
-        L"設定を保存",
-        L"テレメトリーは任意、匿名で、ローカルチェックを妨げません。",
-        L"VibeReady",
+        L"初回セットアップ画面を準備しています。",
         L"Web vibe coding 作業を始める前に、このデバイスをチェックします。",
         L"スキャン段階は読み取り専用です。修復を確認するまで、VibeReady はツールのインストールやシステム変更を行いません。",
         L"Web vibe coding 環境をチェック",
+        L"チェック中...",
+        L"言語",
+        L"言語とテレメトリー",
+        L"UI 言語を選び、匿名テレメトリー同意を設定します。",
+        L"設定を保存",
+        L"設定",
+        L"ダークテーマ",
+        L"オン",
+        L"オフ",
+        L"環境をチェック中",
+        L"VibeReady は環境を順番にチェックしています。",
+        L"スキャン結果",
+        L"準備状況の確認と、実行可能な次のアクションを表示します。",
+        L"ホームに戻る",
+        L"技術詳細を表示",
+        L"技術詳細",
+        L"技術詳細を隠す",
         L"匿名の利用データを送信する",
         L"テレメトリー: 許可",
         L"テレメトリー: オフ",
         L"設定を保存しました。",
+        L"言語とテレメトリー設定を先に保存してください。",
         L"起動チェック",
         L"対応済み",
         L"確認が必要",
@@ -310,10 +359,6 @@ const Copy& Text(Locale locale) {
         L"MVP の準備完了に code コマンドは必須ではありません",
         L"git --version に成功しました",
         L"git init に成功しました",
-        L"スキャン結果",
-        L"環境をチェック中",
-        L"VibeReady は Windows 対応、権限、VS Code、Git、Node.js、npm、WinGet、ネットワークをチェックしています。",
-        L"通常は 1 分以内に完了します。",
         L"必要な項目はすべて準備できています。Web vibe coding を開始できます。",
         L"Web vibe coding の準備まであと ",
         L" 件の修復が必要です。",
@@ -408,28 +453,49 @@ struct StartupChecks {
 struct Preferences {
     Locale locale = DetectSystemLocale();
     bool telemetryAllowed = false;
+    bool darkTheme = false;
+    bool languageKnown = false;
+    bool telemetryKnown = false;
+    bool themeKnown = false;
     bool loaded = false;
     bool saved = false;
+};
+
+struct UiControlLayout {
+    D2D1_RECT_F rect = D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
+    bool visible = false;
+    bool enabled = true;
+};
+
+struct UiLayout {
+    UiControlLayout languageSelect;
+    UiControlLayout telemetryToggle;
+    UiControlLayout themeToggle;
+    UiControlLayout primaryButton;
+    UiControlLayout settingsButton;
+    UiControlLayout technicalDetailsButton;
 };
 
 struct AppState {
     HINSTANCE instance = nullptr;
     HWND window = nullptr;
-    HWND languageCombo = nullptr;
-    HWND telemetryCheck = nullptr;
-    HWND primaryButton = nullptr;
-    HWND statusText = nullptr;
+    vibeready::ui::Foundation ui;
+    UiLayout layout;
     StartupChecks checks;
     Preferences preferences;
-    AppScreen screen = AppScreen::Startup;
+    AppRoute route = AppRoute::Startup;
+    int scanStep = 0;
+    bool scanningActive = false;
+    bool showTechnicalDetails = false;
     bool initialized = false;
+    float dpi = 96.0f;
+    UiControl hoveredControl = UiControl::None;
+    UiControl pressedControl = UiControl::None;
+    UiControl focusedControl = UiControl::None;
+    bool trackingMouse = false;
 };
 
 AppState g_state;
-
-HMENU ControlId(int id) {
-    return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
-}
 
 std::wstring JoinPath(const std::wstring& left, const std::wstring& right) {
     if (left.empty()) {
@@ -924,7 +990,6 @@ CommandCheckResult RunWingetCheck() {
 
     if (!CommandExists(L"winget.exe")) {
         result.state = ToolState::Unusable;
-        result.canAutoRepair = false;
         return result;
     }
 
@@ -934,12 +999,10 @@ CommandCheckResult RunWingetCheck() {
     if (status == ProcessRunStatus::TimedOut) {
         result.state = ToolState::Unusable;
         result.errorCode = L"TOOL_TIMEOUT";
-        result.canAutoRepair = false;
         return result;
     }
     if (status != ProcessRunStatus::Started || exitCode != 0) {
         result.state = ToolState::Unusable;
-        result.canAutoRepair = false;
         return result;
     }
 
@@ -955,7 +1018,6 @@ CommandCheckResult RunNetworkCheck() {
     result.tool = L"network";
     result.state = ToolState::Unusable;
     result.errorCode = L"NETWORK_UNAVAILABLE";
-    result.canAutoRepair = false;
     GetLocalTime(&result.checkedAt);
 
     HINTERNET session = WinHttpOpen(L"VibeReady/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -1173,16 +1235,30 @@ void LoadPreferences() {
         return;
     }
 
+    g_state.preferences.languageKnown = false;
+    g_state.preferences.telemetryKnown = false;
+    g_state.preferences.themeKnown = false;
+    g_state.preferences.loaded = false;
+
     wchar_t locale[32] = {};
     GetPrivateProfileStringW(L"preferences", L"language", L"", locale, 32, path.c_str());
     if (locale[0] != L'\0') {
         g_state.preferences.locale = LocaleFromCode(locale);
+        g_state.preferences.languageKnown = true;
         g_state.preferences.loaded = true;
     }
 
     int telemetry = GetPrivateProfileIntW(L"preferences", L"telemetry", -1, path.c_str());
     if (telemetry >= 0) {
         g_state.preferences.telemetryAllowed = telemetry == 1;
+        g_state.preferences.telemetryKnown = true;
+        g_state.preferences.loaded = true;
+    }
+
+    int theme = GetPrivateProfileIntW(L"preferences", L"darkTheme", -1, path.c_str());
+    if (theme >= 0) {
+        g_state.preferences.darkTheme = theme == 1;
+        g_state.preferences.themeKnown = true;
         g_state.preferences.loaded = true;
     }
 }
@@ -1196,7 +1272,38 @@ void SavePreferences() {
     std::wstring path = ConfigPath();
     BOOL languageOk = WritePrivateProfileStringW(L"preferences", L"language", LocaleCode(g_state.preferences.locale).c_str(), path.c_str());
     BOOL telemetryOk = WritePrivateProfileStringW(L"preferences", L"telemetry", g_state.preferences.telemetryAllowed ? L"1" : L"0", path.c_str());
-    g_state.preferences.saved = languageOk && telemetryOk;
+    BOOL themeOk = WritePrivateProfileStringW(L"preferences", L"darkTheme", g_state.preferences.darkTheme ? L"1" : L"0", path.c_str());
+    g_state.preferences.saved = languageOk && telemetryOk && themeOk;
+    if (g_state.preferences.saved) {
+        g_state.preferences.languageKnown = true;
+        g_state.preferences.telemetryKnown = true;
+        g_state.preferences.themeKnown = true;
+    }
+}
+
+bool ArePreferencesComplete() {
+    return g_state.preferences.languageKnown && g_state.preferences.telemetryKnown && g_state.preferences.themeKnown;
+}
+
+void EnterLanguageTelemetry() {
+    g_state.route = AppRoute::LanguageTelemetry;
+    g_state.showTechnicalDetails = false;
+}
+
+void EnterHome() {
+    g_state.route = AppRoute::Home;
+    g_state.showTechnicalDetails = false;
+}
+
+void EnterScanResults() {
+    g_state.route = AppRoute::ScanResults;
+    g_state.showTechnicalDetails = false;
+}
+
+void EnterScanning() {
+    g_state.route = AppRoute::Scanning;
+    g_state.scanStep = 0;
+    g_state.scanningActive = true;
 }
 
 StartupChecks RunStartupChecks() {
@@ -1240,13 +1347,6 @@ void FocusExistingInstance() {
     SetForegroundWindow(existing);
 }
 
-void AddLanguageItems(HWND combo) {
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"简体中文"));
-    SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"日本語"));
-}
-
 int LocaleIndex(Locale locale) {
     switch (locale) {
     case Locale::ZhCn:
@@ -1269,6 +1369,234 @@ Locale LocaleFromIndex(int index) {
     default:
         return Locale::En;
     }
+}
+
+Locale NextLocale(Locale locale, int direction) {
+    int index = LocaleIndex(locale);
+    index = (index + direction + 3) % 3;
+    return LocaleFromIndex(index);
+}
+
+float DipsFromPixels(float pixels) {
+    return pixels * 96.0f / std::max(g_state.dpi, 1.0f);
+}
+
+D2D1_SIZE_F ClientSizeDips(HWND hwnd) {
+    RECT rect = {};
+    GetClientRect(hwnd, &rect);
+    return D2D1::SizeF(
+        DipsFromPixels(static_cast<float>(std::max<LONG>(1, rect.right - rect.left))),
+        DipsFromPixels(static_cast<float>(std::max<LONG>(1, rect.bottom - rect.top))));
+}
+
+D2D1_POINT_2F PointFromLparam(LPARAM lparam) {
+    int x = static_cast<short>(LOWORD(lparam));
+    int y = static_cast<short>(HIWORD(lparam));
+    return D2D1::Point2F(DipsFromPixels(static_cast<float>(x)), DipsFromPixels(static_cast<float>(y)));
+}
+
+bool ContainsPoint(const D2D1_RECT_F& rect, D2D1_POINT_2F point) {
+    return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+}
+
+bool HighContrastEnabled() {
+    HIGHCONTRASTW highContrast = {};
+    highContrast.cbSize = sizeof(highContrast);
+    return SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(highContrast), &highContrast, 0) &&
+        (highContrast.dwFlags & HCF_HIGHCONTRASTON) != 0;
+}
+
+vibeready::ui::ThemeMode CurrentThemeMode() {
+    if (HighContrastEnabled()) {
+        return vibeready::ui::ThemeMode::HighContrast;
+    }
+    return g_state.preferences.darkTheme ? vibeready::ui::ThemeMode::Dark : vibeready::ui::ThemeMode::Light;
+}
+
+UiControlLayout& MutableLayout(UiControl control) {
+    switch (control) {
+    case UiControl::LanguageSelect:
+        return g_state.layout.languageSelect;
+    case UiControl::TelemetryToggle:
+        return g_state.layout.telemetryToggle;
+    case UiControl::ThemeToggle:
+        return g_state.layout.themeToggle;
+    case UiControl::PrimaryButton:
+        return g_state.layout.primaryButton;
+    case UiControl::SettingsButton:
+        return g_state.layout.settingsButton;
+    case UiControl::TechnicalDetailsButton:
+        return g_state.layout.technicalDetailsButton;
+    case UiControl::None:
+    default:
+        return g_state.layout.primaryButton;
+    }
+}
+
+const UiControlLayout& LayoutFor(UiControl control) {
+    return MutableLayout(control);
+}
+
+bool ControlVisible(UiControl control) {
+    return control != UiControl::None && LayoutFor(control).visible;
+}
+
+bool ControlEnabled(UiControl control) {
+    return ControlVisible(control) && LayoutFor(control).enabled;
+}
+
+std::vector<UiControl> FocusOrder() {
+    std::vector<UiControl> controls = {
+        UiControl::LanguageSelect,
+        UiControl::TelemetryToggle,
+        UiControl::ThemeToggle,
+        UiControl::PrimaryButton,
+        UiControl::SettingsButton,
+        UiControl::TechnicalDetailsButton,
+    };
+    std::vector<UiControl> visible;
+    for (UiControl control : controls) {
+        if (ControlEnabled(control)) {
+            visible.push_back(control);
+        }
+    }
+    return visible;
+}
+
+void EnsureFocusedControl() {
+    if (ControlEnabled(g_state.focusedControl)) {
+        return;
+    }
+    std::vector<UiControl> order = FocusOrder();
+    g_state.focusedControl = order.empty() ? UiControl::None : order.front();
+}
+
+void MoveFocus(int direction) {
+    std::vector<UiControl> order = FocusOrder();
+    if (order.empty()) {
+        g_state.focusedControl = UiControl::None;
+        return;
+    }
+
+    auto current = std::find(order.begin(), order.end(), g_state.focusedControl);
+    int index = current == order.end() ? 0 : static_cast<int>(current - order.begin());
+    index = (index + direction + static_cast<int>(order.size())) % static_cast<int>(order.size());
+    g_state.focusedControl = order[static_cast<size_t>(index)];
+}
+
+UiControl HitTest(D2D1_POINT_2F point) {
+    const UiControl controls[] = {
+        UiControl::LanguageSelect,
+        UiControl::TelemetryToggle,
+        UiControl::ThemeToggle,
+        UiControl::PrimaryButton,
+        UiControl::SettingsButton,
+        UiControl::TechnicalDetailsButton,
+    };
+    for (UiControl control : controls) {
+        const UiControlLayout& layout = LayoutFor(control);
+        if (layout.visible && layout.enabled && ContainsPoint(layout.rect, point)) {
+            return control;
+        }
+    }
+    return UiControl::None;
+}
+
+void SetControl(UiControlLayout* control, D2D1_RECT_F rect, bool visible, bool enabled = true) {
+    control->rect = rect;
+    control->visible = visible;
+    control->enabled = enabled;
+}
+
+void UpdateLayout(HWND hwnd) {
+    D2D1_SIZE_F size = ClientSizeDips(hwnd);
+    float width = size.width;
+    float height = size.height;
+    float margin = width < 720.0f ? 28.0f : 40.0f;
+    float right = std::max(margin + 320.0f, width - margin);
+    float bottomActionY = std::max(500.0f, height - 76.0f);
+
+    g_state.layout = {};
+
+    if (g_state.route == AppRoute::LanguageTelemetry) {
+        float panelLeft = margin;
+        float panelRight = std::min(right, panelLeft + 520.0f);
+        SetControl(&g_state.layout.languageSelect, D2D1::RectF(panelLeft + 20.0f, 242.0f, panelRight - 20.0f, 286.0f), true);
+        SetControl(&g_state.layout.telemetryToggle, D2D1::RectF(panelLeft + 20.0f, 300.0f, panelRight - 20.0f, 344.0f), true);
+        SetControl(&g_state.layout.themeToggle, D2D1::RectF(panelLeft + 20.0f, 358.0f, panelRight - 20.0f, 402.0f), true);
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(panelLeft + 20.0f, 426.0f, panelLeft + 260.0f, 470.0f), true);
+    } else if (g_state.route == AppRoute::Scanning) {
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, bottomActionY, margin + 220.0f, bottomActionY + 44.0f), true, false);
+    } else if (g_state.route == AppRoute::Home || g_state.route == AppRoute::ScanResults) {
+        float buttonY = g_state.route == AppRoute::Home ? 250.0f : bottomActionY;
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, buttonY, margin + 306.0f, buttonY + 44.0f), true);
+        SetControl(&g_state.layout.settingsButton, D2D1::RectF(margin + 324.0f, buttonY, margin + 448.0f, buttonY + 44.0f), true);
+        SetControl(&g_state.layout.technicalDetailsButton, D2D1::RectF(std::max(margin + 466.0f, right - 190.0f), buttonY, right, buttonY + 44.0f), true);
+    }
+
+    EnsureFocusedControl();
+}
+
+vibeready::ui::ControlState ControlStateFor(UiControl control, bool loading = false) {
+    if (loading) {
+        return vibeready::ui::ControlState::Loading;
+    }
+    if (!ControlEnabled(control)) {
+        return vibeready::ui::ControlState::Disabled;
+    }
+    if (g_state.pressedControl == control) {
+        return vibeready::ui::ControlState::Pressed;
+    }
+    if (g_state.hoveredControl == control) {
+        return vibeready::ui::ControlState::Hover;
+    }
+    if (g_state.focusedControl == control && GetFocus() == g_state.window) {
+        return vibeready::ui::ControlState::Focused;
+    }
+    return vibeready::ui::ControlState::Normal;
+}
+
+std::wstring RouteTitle() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    switch (g_state.route) {
+    case AppRoute::Startup:
+        return copy.startupTitle;
+    case AppRoute::LanguageTelemetry:
+        return copy.languageTelemetryTitle;
+    case AppRoute::Scanning:
+        return copy.scanningTitle;
+    case AppRoute::ScanResults:
+        return copy.scanResultsTitle;
+    case AppRoute::Home:
+    default:
+        return L"VibeReady";
+    }
+}
+
+std::wstring RouteBody() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    switch (g_state.route) {
+    case AppRoute::Startup:
+        return std::wstring(copy.startupBody) + L" " + copy.startupHint;
+    case AppRoute::LanguageTelemetry:
+        return copy.languageTelemetryBody;
+    case AppRoute::Scanning:
+        return copy.scanningBody;
+    case AppRoute::ScanResults:
+        return copy.scanResultsBody;
+    case AppRoute::Home:
+    default:
+        return copy.homeBody;
+    }
+}
+
+vibeready::ui::StatusTone ToneFor(bool ok) {
+    return ok ? vibeready::ui::StatusTone::Success : vibeready::ui::StatusTone::Warning;
+}
+
+std::wstring ValueFor(bool ok) {
+    const Copy& copy = Text(g_state.preferences.locale);
+    return ok ? copy.supported : copy.unsupported;
 }
 
 std::wstring StateName(ToolState state) {
@@ -1417,7 +1745,7 @@ std::wstring BuildStatusText() {
     std::vector<ResultPageItem> items = BuildResultItems();
     int mustFixCount = CountCategory(items, ResultCategory::MustFix);
 
-    std::wstring text = std::wstring(copy.resultTitle) + L"\r\n";
+    std::wstring text = std::wstring(copy.scanResultsTitle) + L"\r\n";
     if (mustFixCount == 0) {
         text += std::wstring(copy.readyToStart) + L"\r\n";
     } else {
@@ -1441,107 +1769,455 @@ std::wstring BuildStatusText() {
     return text;
 }
 
-void LayoutControls(HWND hwnd);
+std::wstring BuildFriendlyStatusText();
+std::wstring BuildTechnicalStatusText();
 
-const wchar_t* PrimaryActionText() {
-    const Copy& copy = Text(g_state.preferences.locale);
-    switch (g_state.screen) {
-    case AppScreen::LanguageTelemetry:
-        return copy.savePreferencesAction;
-    case AppScreen::ScanResults:
-        return copy.rescanAction;
-    case AppScreen::Home:
-    default:
-        return copy.primaryAction;
+void DrawHeader() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const vibeready::ui::UiTokens& tokens = ui.Tokens();
+    D2D1_SIZE_F size = ui.Size();
+    float margin = size.width < 720.0f ? 28.0f : 40.0f;
+    float right = std::max(margin + 320.0f, size.width - margin);
+
+    ui.DrawTextBlock(L"VibeReady", D2D1::RectF(margin, 28.0f, right, 70.0f),
+        vibeready::ui::TextRole::Display, tokens.colors.text);
+    ui.DrawTextBlock(RouteTitle(), D2D1::RectF(margin, 84.0f, right, 112.0f),
+        vibeready::ui::TextRole::Title, tokens.colors.text);
+    ui.DrawTextBlock(RouteBody(), D2D1::RectF(margin, 120.0f, right, 182.0f),
+        vibeready::ui::TextRole::Body, tokens.colors.textMuted);
+}
+
+void DrawReadinessRows(const D2D1_RECT_F& rect) {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    float y = rect.top + 50.0f;
+    float rowHeight = 32.0f;
+
+    const struct {
+        const wchar_t* label;
+        bool ok;
+    } rows[] = {
+        {L"Windows 10/11", g_state.checks.supportedWindows},
+        {L"x64", g_state.checks.x64},
+        {L"VS Code", g_state.checks.vscode.state == ToolState::Ready},
+        {L"Git", g_state.checks.git.state == ToolState::Ready},
+        {L"Node.js", g_state.checks.node.state == ToolState::Ready},
+        {L"npm", g_state.checks.npm.state == ToolState::Ready},
+    };
+
+    for (const auto& row : rows) {
+        D2D1_RECT_F rowRect = D2D1::RectF(rect.left + 18.0f, y, rect.right - 18.0f, y + rowHeight);
+        ui.DrawStatusRow(vibeready::ui::StatusRowSpec{rowRect, row.label, ValueFor(row.ok), ToneFor(row.ok)});
+        y += rowHeight;
     }
+}
+
+const wchar_t* StepLabel(int index) {
+    switch (index) {
+    case 0:
+        return L"Platform support";
+    case 1:
+        return L"Permissions and folders";
+    case 2:
+        return L"VS Code";
+    case 3:
+        return L"Git";
+    case 4:
+        return L"Node.js and npm";
+    case 5:
+    default:
+        return L"Network and WinGet";
+    }
+}
+
+std::wstring StepValue(int index) {
+    Locale locale = g_state.preferences.locale;
+    if (index < g_state.scanStep) {
+        if (locale == Locale::ZhCn) {
+            return L"已完成";
+        }
+        if (locale == Locale::Ja) {
+            return L"完了";
+        }
+        return L"Done";
+    }
+    if (index == g_state.scanStep) {
+        if (locale == Locale::ZhCn) {
+            return L"进行中";
+        }
+        if (locale == Locale::Ja) {
+            return L"進行中";
+        }
+        return L"In progress";
+    }
+    if (locale == Locale::ZhCn) {
+        return L"等待中";
+    }
+    if (locale == Locale::Ja) {
+        return L"待機中";
+    }
+    return L"Pending";
+}
+
+void DrawSetupScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const Copy& copy = Text(g_state.preferences.locale);
+    const vibeready::ui::UiTokens& tokens = ui.Tokens();
+    D2D1_SIZE_F size = ui.Size();
+    float margin = size.width < 720.0f ? 28.0f : 40.0f;
+    float panelRight = std::min(size.width - margin, margin + 520.0f);
+    D2D1_RECT_F panel = D2D1::RectF(margin, 198.0f, panelRight, 494.0f);
+
+    ui.DrawSection(vibeready::ui::SectionSpec{panel, copy.languageTelemetryTitle});
+    ui.DrawSelect(vibeready::ui::SelectSpec{
+        g_state.layout.languageSelect.rect,
+        copy.languageLabel,
+        copy.languageName,
+        ControlStateFor(UiControl::LanguageSelect)});
+    ui.DrawToggle(vibeready::ui::ToggleSpec{
+        g_state.layout.telemetryToggle.rect,
+        copy.telemetryLabel,
+        g_state.preferences.telemetryAllowed ? copy.toggleOn : copy.toggleOff,
+        g_state.preferences.telemetryAllowed,
+        ControlStateFor(UiControl::TelemetryToggle)});
+    ui.DrawToggle(vibeready::ui::ToggleSpec{
+        g_state.layout.themeToggle.rect,
+        copy.themeLabel,
+        g_state.preferences.darkTheme ? copy.toggleOn : copy.toggleOff,
+        g_state.preferences.darkTheme,
+        ControlStateFor(UiControl::ThemeToggle)});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        copy.savePreferencesAction,
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+
+    if (!g_state.checks.configWritable && g_state.initialized) {
+        D2D1_RECT_F note = D2D1::RectF(panel.left + 20.0f, panel.bottom - 42.0f, panel.right - 20.0f, panel.bottom - 16.0f);
+        ui.DrawTextBlock(copy.configWarning, note, vibeready::ui::TextRole::Caption, tokens.colors.warning);
+    }
+}
+
+void DrawStatusSurface(const D2D1_RECT_F& sectionRect) {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const Copy& copy = Text(g_state.preferences.locale);
+    const vibeready::ui::UiTokens& tokens = ui.Tokens();
+    std::wstring title = copy.diagnosticsTitle;
+    if (g_state.showTechnicalDetails) {
+        title = copy.technicalDetailsLabel;
+    } else if (g_state.route == AppRoute::ScanResults) {
+        title = copy.scanResultsTitle;
+    }
+    ui.DrawSection(vibeready::ui::SectionSpec{sectionRect, title});
+
+    D2D1_RECT_F content = D2D1::RectF(sectionRect.left + 18.0f, sectionRect.top + 48.0f, sectionRect.right - 18.0f, sectionRect.bottom - 18.0f);
+    if (g_state.showTechnicalDetails) {
+        ui.DrawTextBlock(BuildTechnicalStatusText(), content, vibeready::ui::TextRole::Code, tokens.colors.text);
+        return;
+    }
+    if (g_state.route == AppRoute::ScanResults) {
+        ui.DrawTextBlock(BuildStatusText(), content, vibeready::ui::TextRole::Code, tokens.colors.text);
+        return;
+    }
+
+    DrawReadinessRows(sectionRect);
+}
+
+void DrawHomeOrResults() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const Copy& copy = Text(g_state.preferences.locale);
+    D2D1_SIZE_F size = ui.Size();
+    float margin = size.width < 720.0f ? 28.0f : 40.0f;
+    float right = std::max(margin + 320.0f, size.width - margin);
+    float statusTop = g_state.route == AppRoute::Home ? 322.0f : 212.0f;
+    float statusBottom = std::max(statusTop + 248.0f, size.height - 112.0f);
+    if (g_state.route == AppRoute::ScanResults) {
+        statusBottom = std::max(statusTop + 250.0f, size.height - 104.0f);
+    }
+
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        g_state.route == AppRoute::ScanResults ? copy.rescanAction : copy.primaryAction,
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        copy.settingsAction,
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        g_state.showTechnicalDetails ? copy.hideTechnicalDetailsAction : copy.technicalDetailsAction,
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+
+    DrawStatusSurface(D2D1::RectF(margin, statusTop, right, statusBottom));
+}
+
+void DrawScanningScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const Copy& copy = Text(g_state.preferences.locale);
+    D2D1_SIZE_F size = ui.Size();
+    float margin = size.width < 720.0f ? 28.0f : 40.0f;
+    float right = std::max(margin + 320.0f, size.width - margin);
+    D2D1_RECT_F section = D2D1::RectF(margin, 210.0f, right, std::max(458.0f, size.height - 112.0f));
+
+    ui.DrawSection(vibeready::ui::SectionSpec{section, copy.scanningTitle});
+    float y = section.top + 52.0f;
+    for (int i = 0; i < 6; ++i) {
+        vibeready::ui::StatusTone tone = vibeready::ui::StatusTone::Neutral;
+        if (i < g_state.scanStep) {
+            tone = vibeready::ui::StatusTone::Success;
+        } else if (i == g_state.scanStep) {
+            tone = vibeready::ui::StatusTone::Accent;
+        }
+        D2D1_RECT_F row = D2D1::RectF(section.left + 18.0f, y, section.right - 18.0f, y + 31.0f);
+        ui.DrawStatusRow(vibeready::ui::StatusRowSpec{row, StepLabel(i), StepValue(i), tone});
+        y += 31.0f;
+    }
+    ui.DrawProgressBar(D2D1::RectF(section.left + 18.0f, section.bottom - 38.0f, section.right - 18.0f, section.bottom - 28.0f),
+        static_cast<float>(g_state.scanStep) / 6.0f,
+        vibeready::ui::ControlState::Loading);
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        copy.checkingAction,
+        ControlStateFor(UiControl::PrimaryButton, true),
+        true});
+}
+
+void DrawMainWindow(HWND hwnd) {
+    UpdateLayout(hwnd);
+    DrawHeader();
+
+    switch (g_state.route) {
+    case AppRoute::LanguageTelemetry:
+        DrawSetupScreen();
+        break;
+    case AppRoute::Scanning:
+        DrawScanningScreen();
+        break;
+    case AppRoute::ScanResults:
+    case AppRoute::Home:
+        DrawHomeOrResults();
+        break;
+    case AppRoute::Startup:
+    default:
+        break;
+    }
+}
+
+std::wstring BuildFriendlyStatusText() {
+    Locale locale = g_state.preferences.locale;
+    std::wstring text;
+    if (locale == Locale::ZhCn) {
+        text += L"环境准备度\r\n";
+        text += L"• 平台支持：" + std::wstring((g_state.checks.supportedWindows && g_state.checks.x64) ? L"可继续检查。\r\n" : L"当前系统不支持扫描。\r\n");
+        text += L"• 关键组件：\r\n";
+        text += std::wstring(L"  - VS Code：") + std::wstring(g_state.checks.vscode.state == ToolState::Ready ? L"已可用\r\n" : L"未检测到\r\n");
+        text += std::wstring(L"  - Git：") + std::wstring(g_state.checks.git.state == ToolState::Ready ? L"已可用\r\n" : L"未检测到\r\n");
+        text += std::wstring(L"  - Node.js：") + std::wstring(g_state.checks.node.state == ToolState::Ready ? L"已可用\r\n" : L"未检测到\r\n");
+        text += std::wstring(L"  - npm：") + std::wstring(g_state.checks.npm.state == ToolState::Ready ? L"已可用\r\n" : L"未检测到\r\n");
+        text += L"• 权限与写入：";
+        text += std::wstring((g_state.checks.tempWritable && g_state.checks.configWritable) ? L"正常。\r\n" : L"需检查应用目录与临时目录写入权限。\r\n");
+        text += L"\r\n建议操作：\r\n";
+        if (!g_state.checks.supportedWindows || !g_state.checks.x64) {
+            text += L"• 切换到 Windows 10/11 x64 后重试。\r\n";
+        }
+        if (g_state.checks.vscode.state != ToolState::Ready) {
+            text += L"• 安装 VS Code。\r\n";
+        }
+        if (g_state.checks.git.state != ToolState::Ready) {
+            text += L"• 安装 Git。\r\n";
+        }
+        if (g_state.checks.node.state != ToolState::Ready) {
+            text += L"• 安装 Node.js（包含 npm）。\r\n";
+        }
+        return text;
+    }
+    if (locale == Locale::Ja) {
+        text += L"準備状況\r\n";
+        text += L"• 対応可否：";
+        text += std::wstring((g_state.checks.supportedWindows && g_state.checks.x64) ? L"環境チェック可能です。\r\n" : L"対応外の環境です。\r\n");
+        text += L"• 主要コンポーネント：\r\n";
+        text += std::wstring(L"  - VS Code: ") + std::wstring(g_state.checks.vscode.state == ToolState::Ready ? L"利用可能\r\n" : L"未検出\r\n");
+        text += std::wstring(L"  - Git: ") + std::wstring(g_state.checks.git.state == ToolState::Ready ? L"利用可能\r\n" : L"未検出\r\n");
+        text += std::wstring(L"  - Node.js: ") + std::wstring(g_state.checks.node.state == ToolState::Ready ? L"利用可能\r\n" : L"未検出\r\n");
+        text += std::wstring(L"  - npm: ") + std::wstring(g_state.checks.npm.state == ToolState::Ready ? L"利用可能\r\n" : L"未検出\r\n");
+        text += L"• 権限/書き込み：";
+        text += std::wstring((g_state.checks.tempWritable && g_state.checks.configWritable) ? L"正常です。\r\n" : L"権限設定を確認してください。\r\n");
+        text += L"\r\n推奨手順：\r\n";
+        if (!g_state.checks.supportedWindows || !g_state.checks.x64) {
+            text += L"• Windows 10/11 x64 の端末で再実行してください。\r\n";
+        }
+        if (g_state.checks.vscode.state != ToolState::Ready) {
+            text += L"• VS Code をインストールしてください。\r\n";
+        }
+        if (g_state.checks.git.state != ToolState::Ready) {
+            text += L"• Git をインストールしてください。\r\n";
+        }
+        if (g_state.checks.node.state != ToolState::Ready) {
+            text += L"• Node.js（npm 含む）をインストールしてください。\r\n";
+        }
+        return text;
+    }
+    text += L"Environment readiness\r\n";
+    text += L"• Platform: ";
+    text += std::wstring((g_state.checks.supportedWindows && g_state.checks.x64) ? L"ready for scan.\r\n" : L"unsupported.\r\n");
+    text += L"• Tool checks: Git, Node.js, npm, VS Code, WinGet.\r\n";
+    text += L"• Writable status: ";
+    text += std::wstring((g_state.checks.tempWritable && g_state.checks.configWritable) ? L"normal.\r\n" : L"please allow write access.\r\n");
+    text += L"\r\nRecommended actions:\r\n";
+    if (!g_state.checks.supportedWindows || !g_state.checks.x64) {
+        text += L"• Use Windows 10/11 x64.\r\n";
+    }
+    if (g_state.checks.vscode.state != ToolState::Ready) {
+        text += L"• Install VS Code.\r\n";
+    }
+    if (g_state.checks.git.state != ToolState::Ready) {
+        text += L"• Install Git.\r\n";
+    }
+    if (g_state.checks.node.state != ToolState::Ready) {
+        text += L"• Install Node.js (LTS).\r\n";
+    }
+    return text;
+}
+
+std::wstring BuildTechnicalStatusText() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    std::wstring text = std::wstring(copy.diagnosticsTitle) + L"\r\n";
+    text += std::wstring(L"system: ") + (g_state.checks.systemResult.state == ToolState::Ready ? L"ready" : L"blocked");
+    if (!g_state.checks.systemResult.errorCode.empty()) {
+        text += L" (" + g_state.checks.systemResult.errorCode + L")";
+    }
+    text += L"\r\n";
+    text += std::wstring(L"OS: ") + g_state.checks.systemResult.detectedVersion + L"\r\n";
+    text += std::wstring(L"Windows 10/11: ") + (g_state.checks.supportedWindows ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"x64: ") + (g_state.checks.x64 ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Permission: ") + (g_state.checks.administrator ? copy.administrator : copy.standardUser) + L"\r\n";
+    text += std::wstring(L"UAC: ") + (g_state.checks.mayRequireUacForInstall ? copy.uacMayAppear : copy.uacNotExpected) + L"\r\n";
+    text += std::wstring(L"VS Code: ") + (g_state.checks.vscode.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Git: ") + (g_state.checks.git.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Node.js: ") + (g_state.checks.node.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"npm: ") + (g_state.checks.npm.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"WinGet: ") + (g_state.checks.winget.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Network: ") + (g_state.checks.network.state == ToolState::Ready ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Temp: ") + (g_state.checks.tempWritable ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Config: ") + (g_state.checks.configWritable ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"Log: ") + (g_state.checks.logWritable ? copy.supported : copy.unsupported) + L"\r\n";
+    text += std::wstring(L"\r\n") + (g_state.preferences.telemetryAllowed ? copy.telemetryOn : copy.telemetryOff);
+    return text;
+}
+
+std::wstring BuildScanningStatusText() {
+    const Copy& copy = Text(g_state.preferences.locale);
+    const wchar_t* steps[6] = {
+        L"Platform support",
+        L"Permissions and folders",
+        L"VS Code",
+        L"Git",
+        L"Node.js and npm",
+        L"Network and WinGet",
+    };
+    std::wstring text = std::wstring(copy.scanningTitle) + L"\r\n";
+    text += std::wstring(copy.scanningBody) + L"\r\n\r\n";
+    for (int i = 0; i < 6; ++i) {
+        text += std::wstring(L"• ") + steps[i] + L": ";
+        if (i < g_state.scanStep) {
+            text += L"done\r\n";
+        } else if (i == g_state.scanStep) {
+            text += L"in progress\r\n";
+        } else {
+            text += L"pending\r\n";
+        }
+    }
+    int percent = g_state.scanStep * 100 / 6;
+    text += L"\r\n" + std::to_wstring(percent) + L"%\r\n";
+    return text;
 }
 
 void RefreshUi() {
-    const Copy& copy = Text(g_state.preferences.locale);
-    bool showPreferences = g_state.screen == AppScreen::LanguageTelemetry;
-    bool showPrimary = g_state.screen == AppScreen::LanguageTelemetry || g_state.screen == AppScreen::Home || g_state.screen == AppScreen::ScanResults;
-    bool showResults = g_state.screen == AppScreen::ScanResults;
-
     SetWindowTextW(g_state.window, kWindowTitle);
-    SetWindowTextW(g_state.telemetryCheck, copy.telemetryLabel);
-    SendMessageW(g_state.telemetryCheck, BM_SETCHECK, g_state.preferences.telemetryAllowed ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(g_state.languageCombo, CB_SETCURSEL, LocaleIndex(g_state.preferences.locale), 0);
-    SetWindowTextW(g_state.primaryButton, PrimaryActionText());
-    SetWindowTextW(g_state.statusText, showResults ? BuildStatusText().c_str() : L"");
-    ShowWindow(g_state.languageCombo, showPreferences ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_state.telemetryCheck, showPreferences ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_state.primaryButton, showPrimary ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_state.statusText, showResults ? SW_SHOW : SW_HIDE);
-    EnableWindow(g_state.primaryButton, g_state.initialized && showPrimary);
-    LayoutControls(g_state.window);
-    InvalidateRect(g_state.window, nullptr, TRUE);
+    if (g_state.window) {
+        UpdateLayout(g_state.window);
+        InvalidateRect(g_state.window, nullptr, FALSE);
+    }
 }
 
 void PaintMainWindow(HWND hwnd) {
-    PAINTSTRUCT paint;
-    HDC dc = BeginPaint(hwnd, &paint);
-    RECT rect;
-    GetClientRect(hwnd, &rect);
+    PAINTSTRUCT paint = {};
+    BeginPaint(hwnd, &paint);
 
-    const Copy& copy = Text(g_state.preferences.locale);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(24, 32, 42));
-
-    HFONT titleFont = CreateFontW(34, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT bodyFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, titleFont));
-
-    const wchar_t* title = copy.homeTitle;
-    const wchar_t* body = copy.homeBody;
-    const wchar_t* note = copy.homeStatus;
-    if (g_state.screen == AppScreen::Startup) {
-        title = copy.startupTitle;
-        body = copy.startupBody;
-        note = copy.startupStatus;
-    } else if (g_state.screen == AppScreen::LanguageTelemetry) {
-        title = copy.languageTelemetryTitle;
-        body = copy.languageTelemetryBody;
-        note = copy.telemetryHelp;
-    } else if (g_state.screen == AppScreen::Scanning) {
-        title = copy.scanningTitle;
-        body = copy.scanningBody;
-        note = copy.scanningStatus;
-    } else if (g_state.screen == AppScreen::ScanResults) {
-        title = copy.resultTitle;
-        body = BuildStatusText().find(copy.readyToStart) != std::wstring::npos ? copy.readyToStart : copy.trustNote;
-        note = L"";
+    HRESULT beginResult = g_state.ui.BeginDraw(CurrentThemeMode(), paint.hdc);
+    if (SUCCEEDED(beginResult)) {
+        DrawMainWindow(hwnd);
+        HRESULT endResult = g_state.ui.EndDraw();
+        if (endResult == D2DERR_RECREATE_TARGET) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        } else if (FAILED(endResult)) {
+            AppendLog(L"Direct2D end draw failed: " + std::to_wstring(static_cast<unsigned long>(endResult)));
+        }
+    } else {
+        AppendLog(L"Direct2D begin draw failed: " + std::to_wstring(static_cast<unsigned long>(beginResult)));
     }
-
-    RECT titleRect{32, 34, rect.right - 32, 82};
-    DrawTextW(dc, title, -1, &titleRect, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-    SelectObject(dc, bodyFont);
-    RECT bodyRect{32, 104, rect.right - 48, 174};
-    DrawTextW(dc, body, -1, &bodyRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
-
-    RECT noteRect{32, 190, rect.right - 48, 262};
-    DrawTextW(dc, note, -1, &noteRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
-
-    SelectObject(dc, oldFont);
-    DeleteObject(titleFont);
-    DeleteObject(bodyFont);
     EndPaint(hwnd, &paint);
 }
 
-void LayoutControls(HWND hwnd) {
-    RECT rect;
-    GetClientRect(hwnd, &rect);
-    if (g_state.screen == AppScreen::LanguageTelemetry) {
-        MoveWindow(g_state.languageCombo, 32, 298, 180, 120, TRUE);
-        MoveWindow(g_state.telemetryCheck, 32, 342, rect.right - 64, 28, TRUE);
-        MoveWindow(g_state.primaryButton, 32, 398, 220, 42, TRUE);
-    } else if (g_state.screen == AppScreen::ScanResults) {
-        MoveWindow(g_state.primaryButton, 32, 204, 220, 42, TRUE);
-        MoveWindow(g_state.statusText, 32, 264, rect.right - 64, rect.bottom - 296, TRUE);
-    } else {
-        MoveWindow(g_state.primaryButton, 32, 292, 320, 44, TRUE);
+void ActivateControl(UiControl control) {
+    if (!ControlEnabled(control)) {
+        return;
+    }
+
+    switch (control) {
+    case UiControl::LanguageSelect:
+        g_state.preferences.locale = NextLocale(g_state.preferences.locale, 1);
+        g_state.preferences.saved = false;
+        AppendLog(L"language preference changed");
+        RefreshUi();
+        break;
+    case UiControl::TelemetryToggle:
+        g_state.preferences.telemetryAllowed = !g_state.preferences.telemetryAllowed;
+        g_state.preferences.saved = false;
+        AppendLog(g_state.preferences.telemetryAllowed ? L"telemetry consent allowed" : L"telemetry consent declined");
+        RefreshUi();
+        break;
+    case UiControl::ThemeToggle:
+        g_state.preferences.darkTheme = !g_state.preferences.darkTheme;
+        g_state.preferences.saved = false;
+        AppendLog(g_state.preferences.darkTheme ? L"dark theme enabled" : L"dark theme disabled");
+        RefreshUi();
+        break;
+    case UiControl::SettingsButton:
+        EnterLanguageTelemetry();
+        RefreshUi();
+        break;
+    case UiControl::TechnicalDetailsButton:
+        g_state.showTechnicalDetails = !g_state.showTechnicalDetails;
+        RefreshUi();
+        break;
+    case UiControl::PrimaryButton:
+        if (g_state.route == AppRoute::LanguageTelemetry) {
+            SavePreferences();
+            if (g_state.preferences.saved) {
+                EnterHome();
+                AppendLog(L"preferences saved and entered home");
+                RefreshUi();
+            } else {
+                MessageBoxW(g_state.window, Text(g_state.preferences.locale).unsupportedLanguageTelemetry, kWindowTitle, MB_ICONERROR | MB_OK);
+            }
+        } else if (g_state.route == AppRoute::Home) {
+            EnterScanning();
+            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            AppendLog(L"primary environment check started");
+            RefreshUi();
+        } else if (g_state.route == AppRoute::ScanResults) {
+            EnterScanning();
+            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            RefreshUi();
+            AppendLog(L"read-only environment rescan started");
+        }
+        break;
+    case UiControl::None:
+    default:
+        break;
     }
 }
 
@@ -1549,21 +2225,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     switch (message) {
     case WM_CREATE:
         g_state.window = hwnd;
-        g_state.languageCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
-            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-            0, 0, 0, 0, hwnd, ControlId(kLanguageComboControlId), g_state.instance, nullptr);
-        g_state.telemetryCheck = CreateWindowExW(0, L"BUTTON", nullptr,
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            0, 0, 0, 0, hwnd, ControlId(kTelemetryCheckControlId), g_state.instance, nullptr);
-        g_state.primaryButton = CreateWindowExW(0, L"BUTTON", nullptr,
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0, hwnd, ControlId(kPrimaryButtonControlId), g_state.instance, nullptr);
-        g_state.statusText = CreateWindowExW(0, L"STATIC", nullptr,
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0, hwnd, ControlId(kStatusTextControlId), g_state.instance, nullptr);
-
-        AddLanguageItems(g_state.languageCombo);
-        RefreshUi();
+        g_state.dpi = static_cast<float>(GetDpiForWindow(hwnd));
+        if (FAILED(g_state.ui.Initialize(hwnd))) {
+            MessageBoxW(hwnd, L"VibeReady could not initialize Direct2D.", kWindowTitle, MB_ICONERROR | MB_OK);
+            return -1;
+        }
+        g_state.ui.SetDpi(g_state.dpi);
+        UpdateLayout(hwnd);
         SetTimer(hwnd, kStartupTimerId, 50, nullptr);
         return 0;
 
@@ -1573,56 +2241,163 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             g_state.checks = RunStartupChecks();
             LoadPreferences();
             AppendLog(L"startup checks completed");
+            if (!ArePreferencesComplete()) {
+                EnterLanguageTelemetry();
+            } else {
+                EnterHome();
+            }
             g_state.initialized = true;
-            g_state.screen = g_state.preferences.loaded ? AppScreen::Home : AppScreen::LanguageTelemetry;
             RefreshUi();
             if (!g_state.checks.supportedWindows || !g_state.checks.x64) {
                 const Copy& copy = Text(g_state.preferences.locale);
                 MessageBoxW(hwnd, copy.unsupportedSystemBody, copy.unsupportedSystemTitle, MB_ICONERROR | MB_OK);
+            } else if (g_state.route == AppRoute::Home) {
+                AppendLog(L"entered home route");
             }
         }
         if (wparam == kScanTimerId) {
-            KillTimer(hwnd, kScanTimerId);
-            AppendLog(L"read-only environment scan started");
-            g_state.checks = RunStartupChecks();
-            AppendLog(L"read-only environment scan completed");
-            g_state.screen = AppScreen::ScanResults;
-            RefreshUi();
-        }
-        return 0;
-
-    case WM_SIZE:
-        LayoutControls(hwnd);
-        return 0;
-
-    case WM_COMMAND:
-        if (LOWORD(wparam) == kLanguageComboControlId && HIWORD(wparam) == CBN_SELCHANGE) {
-            int index = static_cast<int>(SendMessageW(g_state.languageCombo, CB_GETCURSEL, 0, 0));
-            g_state.preferences.locale = LocaleFromIndex(index);
-            AppendLog(L"language preference changed");
-            RefreshUi();
-            return 0;
-        }
-        if (LOWORD(wparam) == kTelemetryCheckControlId && HIWORD(wparam) == BN_CLICKED) {
-            g_state.preferences.telemetryAllowed = SendMessageW(g_state.telemetryCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            AppendLog(g_state.preferences.telemetryAllowed ? L"telemetry consent allowed" : L"telemetry consent declined");
-            RefreshUi();
-            return 0;
-        }
-        if (LOWORD(wparam) == kPrimaryButtonControlId && HIWORD(wparam) == BN_CLICKED) {
-            if (g_state.screen == AppScreen::LanguageTelemetry) {
-                SavePreferences();
-                g_state.preferences.loaded = true;
-                AppendLog(L"first-run preferences saved");
-                g_state.screen = AppScreen::Home;
-                RefreshUi();
+            if (g_state.route != AppRoute::Scanning) {
                 return 0;
             }
+            if (g_state.scanStep >= 5) {
+                KillTimer(hwnd, kScanTimerId);
+                g_state.scanningActive = false;
+                g_state.scanStep = 6;
+                AppendLog(L"read-only environment scan started");
+                g_state.checks = RunStartupChecks();
+                AppendLog(L"read-only environment scan completed");
+                EnterScanResults();
+                RefreshUi();
+                AppendLog(L"scan flow finished");
+            } else {
+                ++g_state.scanStep;
+                RefreshUi();
+            }
+        }
+        return 0;
 
-            AppendLog(L"primary environment check entry clicked");
-            g_state.screen = AppScreen::Scanning;
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_SIZE:
+        if (wparam != SIZE_MINIMIZED) {
+            g_state.ui.Resize(LOWORD(lparam), HIWORD(lparam));
             RefreshUi();
-            SetTimer(hwnd, kScanTimerId, 700, nullptr);
+        }
+        return 0;
+
+    case WM_DPICHANGED: {
+        g_state.dpi = static_cast<float>(HIWORD(wparam));
+        g_state.ui.SetDpi(g_state.dpi);
+        RECT* suggested = reinterpret_cast<RECT*>(lparam);
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+            suggested->right - suggested->left, suggested->bottom - suggested->top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        RefreshUi();
+        return 0;
+    }
+
+    case WM_SETTINGCHANGE:
+    case WM_THEMECHANGED:
+        RefreshUi();
+        return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lparam) == HTCLIENT && g_state.hoveredControl != UiControl::None) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        break;
+
+    case WM_MOUSEMOVE: {
+        if (!g_state.trackingMouse) {
+            TRACKMOUSEEVENT event = {};
+            event.cbSize = sizeof(event);
+            event.dwFlags = TME_LEAVE;
+            event.hwndTrack = hwnd;
+            TrackMouseEvent(&event);
+            g_state.trackingMouse = true;
+        }
+        UiControl hovered = HitTest(PointFromLparam(lparam));
+        if (hovered != g_state.hoveredControl) {
+            g_state.hoveredControl = hovered;
+            RefreshUi();
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        g_state.trackingMouse = false;
+        if (g_state.hoveredControl != UiControl::None) {
+            g_state.hoveredControl = UiControl::None;
+            RefreshUi();
+        }
+        return 0;
+
+    case WM_LBUTTONDOWN: {
+        SetFocus(hwnd);
+        UiControl pressed = HitTest(PointFromLparam(lparam));
+        if (pressed != UiControl::None) {
+            g_state.pressedControl = pressed;
+            g_state.focusedControl = pressed;
+            SetCapture(hwnd);
+            RefreshUi();
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        UiControl pressed = g_state.pressedControl;
+        UiControl released = HitTest(PointFromLparam(lparam));
+        if (GetCapture() == hwnd) {
+            ReleaseCapture();
+        }
+        g_state.pressedControl = UiControl::None;
+        RefreshUi();
+        if (pressed != UiControl::None && pressed == released) {
+            ActivateControl(pressed);
+        }
+        return 0;
+    }
+
+    case WM_CANCELMODE:
+        g_state.pressedControl = UiControl::None;
+        RefreshUi();
+        return 0;
+
+    case WM_SETFOCUS:
+        EnsureFocusedControl();
+        RefreshUi();
+        return 0;
+
+    case WM_KILLFOCUS:
+        RefreshUi();
+        return 0;
+
+    case WM_GETDLGCODE:
+        return DLGC_WANTARROWS | DLGC_WANTCHARS | DLGC_WANTTAB;
+
+    case WM_KEYDOWN:
+        if (wparam == VK_TAB) {
+            MoveFocus((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+            RefreshUi();
+            return 0;
+        }
+        if (wparam == VK_RETURN || wparam == VK_SPACE) {
+            ActivateControl(g_state.focusedControl);
+            return 0;
+        }
+        if (g_state.focusedControl == UiControl::LanguageSelect &&
+            (wparam == VK_LEFT || wparam == VK_UP || wparam == VK_RIGHT || wparam == VK_DOWN)) {
+            int direction = (wparam == VK_LEFT || wparam == VK_UP) ? -1 : 1;
+            g_state.preferences.locale = NextLocale(g_state.preferences.locale, direction);
+            g_state.preferences.saved = false;
+            RefreshUi();
+            return 0;
+        }
+        if (wparam == VK_ESCAPE && g_state.route == AppRoute::LanguageTelemetry && ArePreferencesComplete()) {
+            EnterHome();
+            RefreshUi();
             return 0;
         }
         break;
@@ -1631,8 +2406,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         PaintMainWindow(hwnd);
         return 0;
 
+    case WM_GETMINMAXINFO: {
+        MINMAXINFO* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize.x = MulDiv(720, static_cast<int>(g_state.dpi), 96);
+        info->ptMinTrackSize.y = MulDiv(560, static_cast<int>(g_state.dpi), 96);
+        return 0;
+    }
+
     case WM_DESTROY:
         AppendLog(L"shutdown");
+        g_state.ui.DiscardDeviceResources();
         PostQuitMessage(0);
         return 0;
 
@@ -1646,6 +2429,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
 bool RegisterMainWindowClass(HINSTANCE instance) {
     WNDCLASSEXW windowClass = {};
     windowClass.cbSize = sizeof(windowClass);
+    windowClass.style = CS_HREDRAW | CS_VREDRAW;
     windowClass.lpfnWndProc = WindowProc;
     windowClass.hInstance = instance;
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -1658,6 +2442,8 @@ bool RegisterMainWindowClass(HINSTANCE instance) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     HANDLE mutex = CreateMutexW(nullptr, TRUE, kSingleInstanceMutex);
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         FocusExistingInstance();
@@ -1682,8 +2468,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        760,
-        560,
+        MulDiv(900, static_cast<int>(GetDpiForSystem()), 96),
+        MulDiv(680, static_cast<int>(GetDpiForSystem()), 96),
         nullptr,
         nullptr,
         instance,
