@@ -1,11 +1,13 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <shlobj.h>
+#include <shellapi.h>
 
 #include "ui_foundation.h"
 
 #include <algorithm>
 #include <cwctype>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -16,6 +18,7 @@ constexpr wchar_t kWindowTitle[] = L"VibeReady";
 constexpr wchar_t kSingleInstanceMutex[] = L"Local\\VibeReadySingleInstance";
 constexpr UINT_PTR kStartupTimerId = 1;
 constexpr UINT_PTR kScanTimerId = 2;
+constexpr UINT_PTR kRepairTimerId = 3;
 
 enum class AppRoute {
     Startup,
@@ -23,6 +26,9 @@ enum class AppRoute {
     Home,
     Scanning,
     ScanResults,
+    FixPlan,
+    FixProgress,
+    ManualSteps,
 };
 
 enum class UiControl {
@@ -104,6 +110,20 @@ enum class ResultCategory {
     Manual,
 };
 
+enum class RepairTool {
+    Vscode,
+    Git,
+    NodeJs,
+};
+
+enum class RepairStepState {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Manual,
+};
+
 struct ResultPageItem {
     std::wstring name;
     ToolState state = ToolState::Error;
@@ -112,6 +132,20 @@ struct ResultPageItem {
     std::wstring nextStep;
     std::wstring detectedVersion;
     ResultCategory category = ResultCategory::Manual;
+};
+
+struct RepairPlanItem {
+    RepairTool tool = RepairTool::Vscode;
+    std::wstring name;
+    std::wstring packageId;
+    std::wstring reason;
+    std::wstring source;
+    std::wstring scanErrorCode;
+    std::wstring resultErrorCode;
+    DWORD exitCode = 0;
+    bool manualOnly = false;
+    bool mayRequireUac = true;
+    RepairStepState stepState = RepairStepState::Pending;
 };
 
 struct Copy {
@@ -476,6 +510,16 @@ struct UiLayout {
     UiControlLayout technicalDetailsButton;
 };
 
+struct RepairState {
+    std::vector<RepairPlanItem> plan;
+    size_t currentIndex = 0;
+    RepairTool manualTool = RepairTool::Vscode;
+    bool active = false;
+    bool completed = false;
+    bool failed = false;
+    std::wstring lastMessage;
+};
+
 struct AppState {
     HINSTANCE instance = nullptr;
     HWND window = nullptr;
@@ -486,6 +530,7 @@ struct AppState {
     AppRoute route = AppRoute::Startup;
     int scanStep = 0;
     bool scanningActive = false;
+    RepairState repair;
     bool showTechnicalDetails = false;
     bool initialized = false;
     float dpi = 96.0f;
@@ -1225,6 +1270,77 @@ void AppendLog(const std::wstring& message) {
     WriteTextFile(g_state.checks.logPath, std::wstring(prefix) + message + L"\r\n", true);
 }
 
+bool IsApprovedPackageId(const std::wstring& packageId) {
+    return packageId == L"Microsoft.VisualStudioCode" ||
+        packageId == L"Git.Git" ||
+        packageId == L"OpenJS.NodeJS.LTS";
+}
+
+std::wstring QuoteArgument(const std::wstring& value) {
+    std::wstring quoted = L"\"";
+    for (wchar_t ch : value) {
+        if (ch == L'"') {
+            quoted += L"\\\"";
+        } else {
+            quoted += ch;
+        }
+    }
+    quoted += L"\"";
+    return quoted;
+}
+
+std::wstring InstallErrorFromExitCode(DWORD exitCode) {
+    if (exitCode == static_cast<DWORD>(ERROR_CANCELLED) ||
+        exitCode == static_cast<DWORD>(HRESULT_FROM_WIN32(ERROR_CANCELLED))) {
+        return L"USER_CANCELLED_UAC";
+    }
+    return L"INSTALL_FAILED";
+}
+
+ProcessRunStatus RunWingetInstall(const std::wstring& packageId, DWORD* exitCode) {
+    if (!IsApprovedPackageId(packageId)) {
+        *exitCode = 1;
+        return ProcessRunStatus::NotStarted;
+    }
+
+    constexpr DWORD kInstallTimeoutMs = 10 * 60 * 1000;
+    std::wstring commandLine = L"winget.exe install --id " + QuoteArgument(packageId) +
+        L" --exact --source winget --accept-package-agreements --accept-source-agreements --silent --disable-interactivity";
+    return RunProcessWithTimeout(commandLine, L"", kInstallTimeoutMs, exitCode);
+}
+
+bool RefreshScanForRepairTool(RepairTool tool, std::wstring* verifyError) {
+    switch (tool) {
+    case RepairTool::Vscode:
+        g_state.checks.vscode = RunVscodeScan();
+        if (g_state.checks.vscode.state == ToolState::Ready) {
+            return true;
+        }
+        *verifyError = g_state.checks.vscode.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.vscode.errorCode;
+        return false;
+    case RepairTool::Git:
+        g_state.checks.git = RunGitScan();
+        if (g_state.checks.git.state == ToolState::Ready) {
+            return true;
+        }
+        *verifyError = g_state.checks.git.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.git.errorCode;
+        return false;
+    case RepairTool::NodeJs:
+    default:
+        g_state.checks.node = RunVersionCommandCheck(L"node", L"node.exe", L"node.exe --version", L"NODE_NOT_FOUND");
+        g_state.checks.npm = RunVersionCommandCheck(L"npm", L"npm.cmd", L"cmd.exe /d /s /c \"npm.cmd --version\"", L"NPM_NOT_FOUND");
+        if (g_state.checks.node.state == ToolState::Ready && g_state.checks.npm.state == ToolState::Ready) {
+            return true;
+        }
+        if (g_state.checks.node.state != ToolState::Ready) {
+            *verifyError = g_state.checks.node.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.node.errorCode;
+        } else {
+            *verifyError = g_state.checks.npm.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.npm.errorCode;
+        }
+        return false;
+    }
+}
+
 std::wstring ConfigPath() {
     return JoinPath(g_state.checks.configDir, L"config.ini");
 }
@@ -1285,6 +1401,8 @@ bool ArePreferencesComplete() {
     return g_state.preferences.languageKnown && g_state.preferences.telemetryKnown && g_state.preferences.themeKnown;
 }
 
+std::vector<RepairPlanItem> BuildRepairPlan();
+
 void EnterLanguageTelemetry() {
     g_state.route = AppRoute::LanguageTelemetry;
     g_state.showTechnicalDetails = false;
@@ -1296,14 +1414,42 @@ void EnterHome() {
 }
 
 void EnterScanResults() {
+    if (g_state.window) {
+        KillTimer(g_state.window, kRepairTimerId);
+    }
     g_state.route = AppRoute::ScanResults;
     g_state.showTechnicalDetails = false;
 }
 
+void EnterFixPlan() {
+    g_state.repair.plan = BuildRepairPlan();
+    g_state.repair.currentIndex = 0;
+    g_state.repair.active = false;
+    g_state.repair.completed = false;
+    g_state.repair.failed = false;
+    g_state.repair.lastMessage.clear();
+    if (!g_state.repair.plan.empty()) {
+        g_state.repair.manualTool = g_state.repair.plan.front().tool;
+    }
+    g_state.route = AppRoute::FixPlan;
+    g_state.showTechnicalDetails = false;
+}
+
+void EnterManualSteps(RepairTool tool) {
+    g_state.repair.manualTool = tool;
+    g_state.repair.active = false;
+    g_state.route = AppRoute::ManualSteps;
+    g_state.showTechnicalDetails = false;
+}
+
 void EnterScanning() {
+    if (g_state.window) {
+        KillTimer(g_state.window, kRepairTimerId);
+    }
     g_state.route = AppRoute::Scanning;
     g_state.scanStep = 0;
     g_state.scanningActive = true;
+    g_state.repair.active = false;
 }
 
 StartupChecks RunStartupChecks() {
@@ -1532,6 +1678,11 @@ void UpdateLayout(HWND hwnd) {
         SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, buttonY, margin + 306.0f, buttonY + 44.0f), true);
         SetControl(&g_state.layout.settingsButton, D2D1::RectF(margin + 324.0f, buttonY, margin + 448.0f, buttonY + 44.0f), true);
         SetControl(&g_state.layout.technicalDetailsButton, D2D1::RectF(std::max(margin + 466.0f, right - 190.0f), buttonY, right, buttonY + 44.0f), true);
+    } else if (g_state.route == AppRoute::FixPlan || g_state.route == AppRoute::FixProgress || g_state.route == AppRoute::ManualSteps) {
+        bool repairBusy = g_state.route == AppRoute::FixProgress && g_state.repair.active;
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, bottomActionY, margin + 248.0f, bottomActionY + 44.0f), true, !repairBusy);
+        SetControl(&g_state.layout.settingsButton, D2D1::RectF(margin + 266.0f, bottomActionY, margin + 486.0f, bottomActionY + 44.0f), true, !repairBusy);
+        SetControl(&g_state.layout.technicalDetailsButton, D2D1::RectF(std::max(margin + 504.0f, right - 236.0f), bottomActionY, right, bottomActionY + 44.0f), true, !repairBusy);
     }
 
     EnsureFocusedControl();
@@ -1556,6 +1707,18 @@ vibeready::ui::ControlState ControlStateFor(UiControl control, bool loading = fa
     return vibeready::ui::ControlState::Normal;
 }
 
+std::wstring L10n(const wchar_t* en, const wchar_t* zh, const wchar_t* ja) {
+    switch (g_state.preferences.locale) {
+    case Locale::ZhCn:
+        return zh;
+    case Locale::Ja:
+        return ja;
+    case Locale::En:
+    default:
+        return en;
+    }
+}
+
 std::wstring RouteTitle() {
     const Copy& copy = Text(g_state.preferences.locale);
     switch (g_state.route) {
@@ -1567,6 +1730,12 @@ std::wstring RouteTitle() {
         return copy.scanningTitle;
     case AppRoute::ScanResults:
         return copy.scanResultsTitle;
+    case AppRoute::FixPlan:
+        return L10n(L"Fix plan", L"修复计划", L"修復プラン");
+    case AppRoute::FixProgress:
+        return L10n(L"Fixing required tools", L"正在修复必需工具", L"必須ツールを修復中");
+    case AppRoute::ManualSteps:
+        return L10n(L"Manual installation steps", L"手动安装步骤", L"手動インストール手順");
     case AppRoute::Home:
     default:
         return L"VibeReady";
@@ -1584,6 +1753,21 @@ std::wstring RouteBody() {
         return copy.scanningBody;
     case AppRoute::ScanResults:
         return copy.scanResultsBody;
+    case AppRoute::FixPlan:
+        return L10n(
+            L"Review exactly what VibeReady will install before anything changes.",
+            L"在执行任何安装前，先确认 VibeReady 将安装哪些必需项。",
+            L"変更を行う前に、VibeReady がインストールする必須項目を確認します。");
+    case AppRoute::FixProgress:
+        return L10n(
+            L"VibeReady is running only approved WinGet installs and verifying each tool again.",
+            L"VibeReady 只会执行已批准的 WinGet 安装，并在每一步后重新验证工具。",
+            L"VibeReady は承認済みの WinGet インストールだけを実行し、各ツールを再確認します。");
+    case AppRoute::ManualSteps:
+        return L10n(
+            L"Use official installers when automatic repair is unavailable or fails.",
+            L"当自动修复不可用或失败时，请使用官方安装器。",
+            L"自動修復が利用できない、または失敗した場合は公式インストーラーを使用します。");
     case AppRoute::Home:
     default:
         return copy.homeBody;
@@ -1701,6 +1885,102 @@ std::vector<ResultPageItem> BuildResultItems() {
     return items;
 }
 
+std::wstring RepairToolName(RepairTool tool) {
+    switch (tool) {
+    case RepairTool::Vscode:
+        return L"VS Code";
+    case RepairTool::Git:
+        return L"Git";
+    case RepairTool::NodeJs:
+    default:
+        return L"Node.js LTS";
+    }
+}
+
+std::wstring RepairPackageId(RepairTool tool) {
+    switch (tool) {
+    case RepairTool::Vscode:
+        return L"Microsoft.VisualStudioCode";
+    case RepairTool::Git:
+        return L"Git.Git";
+    case RepairTool::NodeJs:
+    default:
+        return L"OpenJS.NodeJS.LTS";
+    }
+}
+
+std::wstring RepairOfficialUrl(RepairTool tool) {
+    switch (tool) {
+    case RepairTool::Vscode:
+        return L"https://code.visualstudio.com/Download";
+    case RepairTool::Git:
+        return L"https://git-scm.com/download/win";
+    case RepairTool::NodeJs:
+    default:
+        return L"https://nodejs.org/en/download";
+    }
+}
+
+std::wstring RepairSourceName(bool manualOnly) {
+    if (manualOnly) {
+        return L10n(L"Official download page", L"官方下载页面", L"公式ダウンロードページ");
+    }
+    return L"WinGet";
+}
+
+bool RepairCandidateState(ToolState state) {
+    return state == ToolState::Missing || state == ToolState::Unusable;
+}
+
+RepairPlanItem MakeRepairItem(RepairTool tool, ToolState state, const std::wstring& errorCode) {
+    bool automaticUnavailable = g_state.checks.winget.state != ToolState::Ready || g_state.checks.network.state != ToolState::Ready;
+    RepairPlanItem item;
+    item.tool = tool;
+    item.name = RepairToolName(tool);
+    item.packageId = RepairPackageId(tool);
+    item.scanErrorCode = errorCode;
+    item.reason = ReasonForState(state);
+    item.manualOnly = automaticUnavailable;
+    item.mayRequireUac = g_state.checks.mayRequireUacForInstall && !item.manualOnly;
+    item.source = RepairSourceName(item.manualOnly);
+    item.stepState = item.manualOnly ? RepairStepState::Manual : RepairStepState::Pending;
+    return item;
+}
+
+std::vector<RepairPlanItem> BuildRepairPlan() {
+    std::vector<RepairPlanItem> plan;
+    if (RepairCandidateState(g_state.checks.vscode.state)) {
+        plan.push_back(MakeRepairItem(RepairTool::Vscode, g_state.checks.vscode.state, g_state.checks.vscode.errorCode));
+    }
+    if (RepairCandidateState(g_state.checks.git.state)) {
+        plan.push_back(MakeRepairItem(RepairTool::Git, g_state.checks.git.state, g_state.checks.git.errorCode));
+    }
+    if (RepairCandidateState(g_state.checks.node.state) || RepairCandidateState(g_state.checks.npm.state)) {
+        std::wstring error = RepairCandidateState(g_state.checks.node.state) ? g_state.checks.node.errorCode : g_state.checks.npm.errorCode;
+        ToolState state = RepairCandidateState(g_state.checks.node.state) ? g_state.checks.node.state : g_state.checks.npm.state;
+        plan.push_back(MakeRepairItem(RepairTool::NodeJs, state, error));
+    }
+    return plan;
+}
+
+bool HasAutoRepairItems() {
+    for (const RepairPlanItem& item : g_state.repair.plan) {
+        if (!item.manualOnly) {
+            return true;
+        }
+    }
+    return false;
+}
+
+RepairTool FirstManualRepairTool() {
+    for (const RepairPlanItem& item : g_state.repair.plan) {
+        if (item.manualOnly || item.stepState == RepairStepState::Failed) {
+            return item.tool;
+        }
+    }
+    return g_state.repair.plan.empty() ? RepairTool::Vscode : g_state.repair.plan.front().tool;
+}
+
 int CountCategory(const std::vector<ResultPageItem>& items, ResultCategory category) {
     int count = 0;
     for (const ResultPageItem& item : items) {
@@ -1766,6 +2046,128 @@ std::wstring BuildStatusText() {
         text += std::wstring(L"\r\n") + copy.settingsSaved;
     }
     text += std::wstring(L"\r\n") + (g_state.preferences.telemetryAllowed ? copy.telemetryOn : copy.telemetryOff);
+    return text;
+}
+
+std::wstring RepairStepStateName(RepairStepState state) {
+    switch (state) {
+    case RepairStepState::Running:
+        return L10n(L"running", L"执行中", L"実行中");
+    case RepairStepState::Succeeded:
+        return L10n(L"succeeded", L"已成功", L"成功");
+    case RepairStepState::Failed:
+        return L10n(L"failed", L"失败", L"失敗");
+    case RepairStepState::Manual:
+        return L10n(L"manual steps", L"手动步骤", L"手動手順");
+    case RepairStepState::Pending:
+    default:
+        return L10n(L"pending", L"等待中", L"待機中");
+    }
+}
+
+std::wstring BuildRepairPlanText() {
+    std::wstring text = L10n(L"Repair plan\r\n", L"修复计划\r\n", L"修復プラン\r\n");
+    if (g_state.repair.plan.empty()) {
+        text += L10n(
+            L"Everything required is already ready. No install action is needed.\r\n",
+            L"所有必需项已就绪，不需要安装。\r\n",
+            L"必須項目はすべて準備済みです。インストールは不要です。\r\n");
+        return text;
+    }
+
+    text += L10n(
+        L"Nothing will be installed until you confirm Start fix.\r\n\r\n",
+        L"点击“开始修复”前不会执行任何安装。\r\n\r\n",
+        L"「修復を開始」を確認するまで、何もインストールしません。\r\n\r\n");
+
+    int order = 1;
+    for (const RepairPlanItem& item : g_state.repair.plan) {
+        text += std::to_wstring(order) + L". " + item.name + L"\r\n";
+        text += L"   " + L10n(L"Source: ", L"来源：", L"入手元: ") + item.source;
+        if (!item.manualOnly) {
+            text += L" (" + item.packageId + L")";
+        }
+        text += L"\r\n";
+        text += L"   " + L10n(L"Reason: ", L"原因：", L"理由: ") + item.reason + L"\r\n";
+        if (!item.scanErrorCode.empty()) {
+            text += L"   " + L10n(L"Scan error: ", L"扫描错误：", L"スキャンエラー: ") + item.scanErrorCode + L"\r\n";
+        }
+        text += L"   " + L10n(L"Administrator prompt: ", L"管理员确认：", L"管理者確認: ");
+        text += item.mayRequireUac
+            ? L10n(L"may appear", L"可能出现", L"表示される可能性あり")
+            : L10n(L"not expected", L"预计不会出现", L"想定なし");
+        text += L"\r\n";
+        if (item.manualOnly) {
+            text += L"   " + L10n(
+                L"Automatic repair is unavailable now, so this item will use manual steps.\r\n",
+                L"当前无法自动修复，此项将进入手动步骤。\r\n",
+                L"現在は自動修復を利用できないため、この項目は手動手順を使います。\r\n");
+        }
+        ++order;
+    }
+    return text;
+}
+
+std::wstring BuildFixProgressText() {
+    std::wstring text = L10n(L"Repair progress\r\n", L"修复进度\r\n", L"修復の進行状況\r\n");
+    if (g_state.repair.plan.empty()) {
+        text += L10n(L"No repair steps are required.\r\n", L"不需要修复步骤。\r\n", L"修復手順は不要です。\r\n");
+        return text;
+    }
+
+    for (const RepairPlanItem& item : g_state.repair.plan) {
+        text += L"• " + item.name + L": " + RepairStepStateName(item.stepState);
+        if (!item.resultErrorCode.empty()) {
+            text += L" (" + item.resultErrorCode + L")";
+        }
+        text += L"\r\n";
+    }
+    if (!g_state.repair.lastMessage.empty()) {
+        text += L"\r\n" + g_state.repair.lastMessage + L"\r\n";
+    } else if (g_state.repair.active) {
+        text += L"\r\n" + L10n(
+            L"Please keep this window open while VibeReady waits for WinGet.",
+            L"请保持此窗口打开，VibeReady 正在等待 WinGet 完成。",
+            L"WinGet の完了を待つ間、このウィンドウを開いたままにしてください。") + L"\r\n";
+    }
+    return text;
+}
+
+std::wstring BuildManualStepsText(RepairTool tool) {
+    std::wstring name = RepairToolName(tool);
+    std::wstring text = name + L"\r\n";
+    if (g_state.preferences.locale == Locale::ZhCn) {
+        text += L"1. 打开官方下载页面。\r\n";
+        text += L"2. 下载并运行 Windows 安装器。\r\n";
+        text += L"3. 保持默认选项完成安装。\r\n";
+        text += L"4. 回到 VibeReady，点击“我已安装，重新扫描”。\r\n";
+        if (tool == RepairTool::NodeJs) {
+            text += L"Node.js LTS 安装后必须同时包含 node 和 npm。\r\n";
+        } else if (tool == RepairTool::Git) {
+            text += L"Git 安装后必须能通过 git --version 和 git init。\r\n";
+        }
+    } else if (g_state.preferences.locale == Locale::Ja) {
+        text += L"1. 公式ダウンロードページを開きます。\r\n";
+        text += L"2. Windows インストーラーをダウンロードして実行します。\r\n";
+        text += L"3. 既定の選択でインストールを完了します。\r\n";
+        text += L"4. VibeReady に戻り、「インストール済み、再スキャン」を選びます。\r\n";
+        if (tool == RepairTool::NodeJs) {
+            text += L"Node.js LTS のインストール後は node と npm の両方が必要です。\r\n";
+        } else if (tool == RepairTool::Git) {
+            text += L"Git のインストール後は git --version と git init が成功する必要があります。\r\n";
+        }
+    } else {
+        text += L"1. Open the official download page.\r\n";
+        text += L"2. Download and run the Windows installer.\r\n";
+        text += L"3. Complete installation with the default options.\r\n";
+        text += L"4. Return to VibeReady and choose I installed it, rescan.\r\n";
+        if (tool == RepairTool::NodeJs) {
+            text += L"Node.js LTS must provide both node and npm after installation.\r\n";
+        } else if (tool == RepairTool::Git) {
+            text += L"Git must pass both git --version and git init after installation.\r\n";
+        }
+    }
+    text += L"\r\n" + RepairOfficialUrl(tool);
     return text;
 }
 
@@ -1934,9 +2336,16 @@ void DrawHomeOrResults() {
         statusBottom = std::max(statusTop + 250.0f, size.height - 104.0f);
     }
 
+    std::wstring primaryText = copy.primaryAction;
+    if (g_state.route == AppRoute::ScanResults) {
+        primaryText = BuildRepairPlan().empty()
+            ? std::wstring(copy.rescanAction)
+            : L10n(L"Review fix plan", L"查看修复计划", L"修復プランを確認");
+    }
+
     ui.DrawButton(vibeready::ui::ButtonSpec{
         g_state.layout.primaryButton.rect,
-        g_state.route == AppRoute::ScanResults ? copy.rescanAction : copy.primaryAction,
+        primaryText,
         ControlStateFor(UiControl::PrimaryButton),
         true});
     ui.DrawButton(vibeready::ui::ButtonSpec{
@@ -1984,6 +2393,93 @@ void DrawScanningScreen() {
         true});
 }
 
+void DrawTextPanel(const std::wstring& title, const std::wstring& text) {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    const vibeready::ui::UiTokens& tokens = ui.Tokens();
+    D2D1_SIZE_F size = ui.Size();
+    float margin = size.width < 720.0f ? 28.0f : 40.0f;
+    float right = std::max(margin + 320.0f, size.width - margin);
+    D2D1_RECT_F section = D2D1::RectF(margin, 210.0f, right, std::max(458.0f, size.height - 112.0f));
+    ui.DrawSection(vibeready::ui::SectionSpec{section, title});
+    ui.DrawTextBlock(text, D2D1::RectF(section.left + 18.0f, section.top + 48.0f, section.right - 18.0f, section.bottom - 18.0f),
+        vibeready::ui::TextRole::Code, tokens.colors.text);
+}
+
+void DrawFixPlanScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(L10n(L"Planned actions", L"计划操作", L"予定された操作"), BuildRepairPlanText());
+
+    std::wstring primary = HasAutoRepairItems()
+        ? L10n(L"Start fix", L"开始修复", L"修復を開始")
+        : L10n(L"Manual steps", L"手动步骤", L"手動手順");
+    if (g_state.repair.plan.empty()) {
+        primary = Text(g_state.preferences.locale).rescanAction;
+    }
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        primary,
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        L10n(L"Cancel", L"取消", L"キャンセル"),
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        L10n(L"Manual steps", L"手动步骤", L"手動手順"),
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+}
+
+void DrawFixProgressScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(L10n(L"Repair status", L"修复状态", L"修復ステータス"), BuildFixProgressText());
+
+    std::wstring primary = g_state.repair.active
+        ? L10n(L"Fixing...", L"正在修复...", L"修復中...")
+        : Text(g_state.preferences.locale).rescanAction;
+    if (g_state.repair.failed && !g_state.repair.active) {
+        primary = L10n(L"Retry fix", L"重试修复", L"修復を再試行");
+    }
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        primary,
+        ControlStateFor(UiControl::PrimaryButton, g_state.repair.active),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        L10n(L"Manual steps", L"手动步骤", L"手動手順"),
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        L10n(L"Back to results", L"返回结果", L"結果に戻る"),
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+}
+
+void DrawManualStepsScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(RepairToolName(g_state.repair.manualTool), BuildManualStepsText(g_state.repair.manualTool));
+
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        L10n(L"I installed it, rescan", L"我已安装，重新扫描", L"インストール済み、再スキャン"),
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        L10n(L"Open download page", L"打开下载页面", L"ダウンロードページを開く"),
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        L10n(L"Copy steps", L"复制步骤", L"手順をコピー"),
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+}
+
 void DrawMainWindow(HWND hwnd) {
     UpdateLayout(hwnd);
     DrawHeader();
@@ -1994,6 +2490,15 @@ void DrawMainWindow(HWND hwnd) {
         break;
     case AppRoute::Scanning:
         DrawScanningScreen();
+        break;
+    case AppRoute::FixPlan:
+        DrawFixPlanScreen();
+        break;
+    case AppRoute::FixProgress:
+        DrawFixProgressScreen();
+        break;
+    case AppRoute::ManualSteps:
+        DrawManualStepsScreen();
         break;
     case AppRoute::ScanResults:
     case AppRoute::Home:
@@ -2161,6 +2666,181 @@ void PaintMainWindow(HWND hwnd) {
     EndPaint(hwnd, &paint);
 }
 
+void FailRepairItem(RepairPlanItem* item, const std::wstring& errorCode, DWORD exitCode = 0) {
+    item->stepState = RepairStepState::Failed;
+    item->resultErrorCode = errorCode;
+    item->exitCode = exitCode;
+    g_state.repair.failed = true;
+    g_state.repair.active = false;
+    g_state.repair.completed = true;
+    g_state.repair.manualTool = item->tool;
+    g_state.repair.lastMessage = L10n(
+        L"Automatic repair failed. Use manual steps or retry after the environment changes.",
+        L"自动修复失败。请使用手动步骤，或在环境变化后重试。",
+        L"自動修復に失敗しました。手動手順を使うか、環境変更後に再試行してください。");
+    AppendLog(L"repair failed for " + item->name + L" error=" + errorCode + L" exit=" + std::to_wstring(exitCode));
+}
+
+void RunRepairStep(RepairPlanItem* item) {
+    if (item->manualOnly) {
+        item->stepState = RepairStepState::Manual;
+        return;
+    }
+
+    item->stepState = RepairStepState::Running;
+    g_state.repair.lastMessage = L10n(L"Installing ", L"正在安装 ", L"インストール中 ") + item->name + L"...";
+    RefreshUi();
+    UpdateWindow(g_state.window);
+
+    if (g_state.checks.winget.state != ToolState::Ready) {
+        FailRepairItem(item, L"WINGET_UNAVAILABLE");
+        return;
+    }
+    if (g_state.checks.network.state != ToolState::Ready) {
+        FailRepairItem(item, L"NETWORK_UNAVAILABLE");
+        return;
+    }
+
+    AppendLog(L"repair started for " + item->name + L" package=" + item->packageId);
+    DWORD exitCode = 1;
+    ProcessRunStatus status = RunWingetInstall(item->packageId, &exitCode);
+    if (status == ProcessRunStatus::TimedOut) {
+        FailRepairItem(item, L"TOOL_TIMEOUT", exitCode);
+        return;
+    }
+    if (status != ProcessRunStatus::Started || exitCode != 0) {
+        FailRepairItem(item, InstallErrorFromExitCode(exitCode), exitCode);
+        return;
+    }
+
+    std::wstring verifyError;
+    if (!RefreshScanForRepairTool(item->tool, &verifyError)) {
+        FailRepairItem(item, verifyError.empty() ? L"VERIFY_FAILED" : verifyError, exitCode);
+        return;
+    }
+
+    item->stepState = RepairStepState::Succeeded;
+    item->resultErrorCode.clear();
+    item->exitCode = exitCode;
+    g_state.repair.lastMessage = item->name + L10n(L" is installed and verified.", L" 已安装并通过验证。", L" はインストールされ、確認済みです。");
+    AppendLog(L"repair succeeded for " + item->name);
+}
+
+void FinishRepairFlowIfNeeded() {
+    if (g_state.repair.failed || g_state.repair.currentIndex < g_state.repair.plan.size()) {
+        return;
+    }
+    g_state.repair.active = false;
+    g_state.repair.completed = true;
+    g_state.repair.lastMessage = L10n(
+        L"Automatic repair finished. Rescan to verify the full environment.",
+        L"自动修复已完成。请重新扫描以验证完整环境。",
+        L"自動修復が完了しました。環境全体を確認するため再スキャンしてください。");
+    KillTimer(g_state.window, kRepairTimerId);
+    AppendLog(L"repair flow completed");
+}
+
+void AdvanceRepairFlow() {
+    if (!g_state.repair.active) {
+        KillTimer(g_state.window, kRepairTimerId);
+        return;
+    }
+    if (g_state.repair.currentIndex >= g_state.repair.plan.size()) {
+        FinishRepairFlowIfNeeded();
+        RefreshUi();
+        return;
+    }
+
+    RepairPlanItem& item = g_state.repair.plan[g_state.repair.currentIndex];
+    RunRepairStep(&item);
+    ++g_state.repair.currentIndex;
+    FinishRepairFlowIfNeeded();
+    RefreshUi();
+}
+
+void StartRepairFlow() {
+    if (g_state.repair.plan.empty()) {
+        EnterScanResults();
+        RefreshUi();
+        return;
+    }
+    if (!HasAutoRepairItems()) {
+        EnterManualSteps(FirstManualRepairTool());
+        RefreshUi();
+        return;
+    }
+
+    for (RepairPlanItem& item : g_state.repair.plan) {
+        item.stepState = item.manualOnly ? RepairStepState::Manual : RepairStepState::Pending;
+        item.resultErrorCode.clear();
+        item.exitCode = 0;
+    }
+    g_state.repair.currentIndex = 0;
+    g_state.repair.active = true;
+    g_state.repair.completed = false;
+    g_state.repair.failed = false;
+    g_state.repair.lastMessage = L10n(
+        L"Starting approved WinGet repair.",
+        L"正在启动已批准的 WinGet 修复。",
+        L"承認済みの WinGet 修復を開始しています。");
+    g_state.route = AppRoute::FixProgress;
+    SetTimer(g_state.window, kRepairTimerId, 250, nullptr);
+    RefreshUi();
+}
+
+void OpenManualDownloadPage() {
+    std::wstring url = RepairOfficialUrl(g_state.repair.manualTool);
+    HINSTANCE result = ShellExecuteW(g_state.window, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        AppendLog(L"manual download page open failed");
+        MessageBoxW(g_state.window, url.c_str(), kWindowTitle, MB_ICONINFORMATION | MB_OK);
+    } else {
+        AppendLog(L"manual download page opened for " + RepairToolName(g_state.repair.manualTool));
+    }
+}
+
+bool CopyTextToClipboard(const std::wstring& text) {
+    if (!OpenClipboard(g_state.window)) {
+        return false;
+    }
+    EmptyClipboard();
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!memory) {
+        CloseClipboard();
+        return false;
+    }
+    void* target = GlobalLock(memory);
+    if (!target) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    memcpy(target, text.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (!SetClipboardData(CF_UNICODETEXT, memory)) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    CloseClipboard();
+    return true;
+}
+
+void CopyManualSteps() {
+    std::wstring steps = BuildManualStepsText(g_state.repair.manualTool);
+    if (CopyTextToClipboard(steps)) {
+        AppendLog(L"manual steps copied for " + RepairToolName(g_state.repair.manualTool));
+        MessageBoxW(g_state.window,
+            L10n(L"Manual steps copied.", L"手动步骤已复制。", L"手動手順をコピーしました。").c_str(),
+            kWindowTitle, MB_ICONINFORMATION | MB_OK);
+    } else {
+        MessageBoxW(g_state.window,
+            L10n(L"Could not copy the steps.", L"无法复制步骤。", L"手順をコピーできませんでした。").c_str(),
+            kWindowTitle, MB_ICONERROR | MB_OK);
+    }
+}
+
 void ActivateControl(UiControl control) {
     if (!ControlEnabled(control)) {
         return;
@@ -2186,11 +2866,27 @@ void ActivateControl(UiControl control) {
         RefreshUi();
         break;
     case UiControl::SettingsButton:
-        EnterLanguageTelemetry();
+        if (g_state.route == AppRoute::FixPlan) {
+            EnterScanResults();
+        } else if (g_state.route == AppRoute::FixProgress) {
+            EnterManualSteps(FirstManualRepairTool());
+        } else if (g_state.route == AppRoute::ManualSteps) {
+            OpenManualDownloadPage();
+        } else {
+            EnterLanguageTelemetry();
+        }
         RefreshUi();
         break;
     case UiControl::TechnicalDetailsButton:
-        g_state.showTechnicalDetails = !g_state.showTechnicalDetails;
+        if (g_state.route == AppRoute::FixPlan) {
+            EnterManualSteps(FirstManualRepairTool());
+        } else if (g_state.route == AppRoute::FixProgress) {
+            EnterScanResults();
+        } else if (g_state.route == AppRoute::ManualSteps) {
+            CopyManualSteps();
+        } else {
+            g_state.showTechnicalDetails = !g_state.showTechnicalDetails;
+        }
         RefreshUi();
         break;
     case UiControl::PrimaryButton:
@@ -2209,10 +2905,35 @@ void ActivateControl(UiControl control) {
             AppendLog(L"primary environment check started");
             RefreshUi();
         } else if (g_state.route == AppRoute::ScanResults) {
+            std::vector<RepairPlanItem> plan = BuildRepairPlan();
+            if (!plan.empty()) {
+                EnterFixPlan();
+                AppendLog(L"repair plan reviewed");
+                RefreshUi();
+                break;
+            }
             EnterScanning();
             SetTimer(g_state.window, kScanTimerId, 500, nullptr);
             RefreshUi();
             AppendLog(L"read-only environment rescan started");
+        } else if (g_state.route == AppRoute::FixPlan) {
+            StartRepairFlow();
+            AppendLog(L"repair flow requested");
+        } else if (g_state.route == AppRoute::FixProgress) {
+            if (g_state.repair.failed) {
+                StartRepairFlow();
+                AppendLog(L"repair flow retry requested");
+            } else if (g_state.repair.completed) {
+                EnterScanning();
+                SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+                AppendLog(L"post-repair rescan started");
+                RefreshUi();
+            }
+        } else if (g_state.route == AppRoute::ManualSteps) {
+            EnterScanning();
+            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            AppendLog(L"manual install rescan started");
+            RefreshUi();
         }
         break;
     case UiControl::None:
@@ -2273,6 +2994,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
                 ++g_state.scanStep;
                 RefreshUi();
             }
+        }
+        if (wparam == kRepairTimerId) {
+            AdvanceRepairFlow();
         }
         return 0;
 
@@ -2395,10 +3119,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             RefreshUi();
             return 0;
         }
-        if (wparam == VK_ESCAPE && g_state.route == AppRoute::LanguageTelemetry && ArePreferencesComplete()) {
-            EnterHome();
-            RefreshUi();
-            return 0;
+        if (wparam == VK_ESCAPE) {
+            if (g_state.route == AppRoute::LanguageTelemetry && ArePreferencesComplete()) {
+                EnterHome();
+                RefreshUi();
+                return 0;
+            }
+            if (g_state.route == AppRoute::FixPlan || g_state.route == AppRoute::FixProgress || g_state.route == AppRoute::ManualSteps) {
+                EnterScanResults();
+                RefreshUi();
+                return 0;
+            }
         }
         break;
 
