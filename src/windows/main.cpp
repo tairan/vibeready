@@ -19,6 +19,7 @@ constexpr wchar_t kSingleInstanceMutex[] = L"Local\\VibeReadySingleInstance";
 constexpr UINT_PTR kStartupTimerId = 1;
 constexpr UINT_PTR kScanTimerId = 2;
 constexpr UINT_PTR kRepairTimerId = 3;
+constexpr UINT_PTR kVerificationTimerId = 4;
 
 enum class AppRoute {
     Startup,
@@ -29,6 +30,9 @@ enum class AppRoute {
     FixPlan,
     FixProgress,
     ManualSteps,
+    Verifying,
+    VerificationFailed,
+    Ready,
 };
 
 enum class UiControl {
@@ -39,6 +43,7 @@ enum class UiControl {
     PrimaryButton,
     SettingsButton,
     TechnicalDetailsButton,
+    ExitButton,
 };
 
 enum class Locale {
@@ -81,6 +86,7 @@ struct VscodeScanResult {
     std::wstring errorCode = L"VSCODE_NOT_FOUND";
     std::wstring detectedVersion;
     std::wstring detectionSource;
+    std::wstring executablePath;
     bool cliAvailable = false;
     bool canAutoRepair = true;
     SYSTEMTIME checkedAt = {};
@@ -508,6 +514,7 @@ struct UiLayout {
     UiControlLayout primaryButton;
     UiControlLayout settingsButton;
     UiControlLayout technicalDetailsButton;
+    UiControlLayout exitButton;
 };
 
 struct RepairState {
@@ -518,6 +525,26 @@ struct RepairState {
     bool completed = false;
     bool failed = false;
     std::wstring lastMessage;
+};
+
+struct VerificationState {
+    int step = 0;
+    bool active = false;
+    bool completed = false;
+    bool succeeded = false;
+    bool failed = false;
+    bool projectCreated = false;
+    bool serviceStarted = false;
+    bool serviceResponded = false;
+    bool browserOpened = false;
+    bool vscodeOpened = false;
+    bool folderFallbackOpened = false;
+    DWORD port = 0;
+    std::wstring projectDir;
+    std::wstring localUrl;
+    std::wstring errorCode;
+    std::wstring lastMessage;
+    PROCESS_INFORMATION serverProcess = {};
 };
 
 struct AppState {
@@ -531,6 +558,7 @@ struct AppState {
     int scanStep = 0;
     bool scanningActive = false;
     RepairState repair;
+    VerificationState verification;
     bool showTechnicalDetails = false;
     bool initialized = false;
     float dpi = 96.0f;
@@ -723,6 +751,7 @@ bool DetectVscodeFromCommonPaths(VscodeScanResult* result) {
             result->errorCode.clear();
             result->detectedVersion = L"installed";
             result->detectionSource = L"common install path";
+            result->executablePath = candidate;
             result->canAutoRepair = false;
             return true;
         }
@@ -760,6 +789,13 @@ bool DetectVscodeFromUninstallRegistry(VscodeScanResult* result) {
                         result->errorCode.clear();
                         result->detectedVersion = VscodeVersionOrFallback(displayVersion);
                         result->detectionSource = L"Windows uninstall registry";
+                        std::wstring installLocation;
+                        if (QueryRegistryString(appKey, L"InstallLocation", &installLocation)) {
+                            std::wstring codePath = JoinPath(installLocation, L"Code.exe");
+                            if (FileExists(codePath)) {
+                                result->executablePath = codePath;
+                            }
+                        }
                         result->canAutoRepair = false;
                         RegCloseKey(appKey);
                         RegCloseKey(uninstallKey);
@@ -1402,6 +1438,10 @@ bool ArePreferencesComplete() {
 }
 
 std::vector<RepairPlanItem> BuildRepairPlan();
+void StartVerificationFlow();
+void AdvanceVerificationFlow();
+void StopVerificationServer();
+void RefreshUi();
 
 void EnterLanguageTelemetry() {
     g_state.route = AppRoute::LanguageTelemetry;
@@ -1416,7 +1456,9 @@ void EnterHome() {
 void EnterScanResults() {
     if (g_state.window) {
         KillTimer(g_state.window, kRepairTimerId);
+        KillTimer(g_state.window, kVerificationTimerId);
     }
+    StopVerificationServer();
     g_state.route = AppRoute::ScanResults;
     g_state.showTechnicalDetails = false;
 }
@@ -1436,6 +1478,7 @@ void EnterFixPlan() {
 }
 
 void EnterManualSteps(RepairTool tool) {
+    StopVerificationServer();
     g_state.repair.manualTool = tool;
     g_state.repair.active = false;
     g_state.route = AppRoute::ManualSteps;
@@ -1445,7 +1488,9 @@ void EnterManualSteps(RepairTool tool) {
 void EnterScanning() {
     if (g_state.window) {
         KillTimer(g_state.window, kRepairTimerId);
+        KillTimer(g_state.window, kVerificationTimerId);
     }
+    StopVerificationServer();
     g_state.route = AppRoute::Scanning;
     g_state.scanStep = 0;
     g_state.scanningActive = true;
@@ -1573,6 +1618,8 @@ UiControlLayout& MutableLayout(UiControl control) {
         return g_state.layout.settingsButton;
     case UiControl::TechnicalDetailsButton:
         return g_state.layout.technicalDetailsButton;
+    case UiControl::ExitButton:
+        return g_state.layout.exitButton;
     case UiControl::None:
     default:
         return g_state.layout.primaryButton;
@@ -1599,6 +1646,7 @@ std::vector<UiControl> FocusOrder() {
         UiControl::PrimaryButton,
         UiControl::SettingsButton,
         UiControl::TechnicalDetailsButton,
+        UiControl::ExitButton,
     };
     std::vector<UiControl> visible;
     for (UiControl control : controls) {
@@ -1673,6 +1721,18 @@ void UpdateLayout(HWND hwnd) {
         SetControl(&g_state.layout.primaryButton, D2D1::RectF(panelLeft + 20.0f, 426.0f, panelLeft + 260.0f, 470.0f), true);
     } else if (g_state.route == AppRoute::Scanning) {
         SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, bottomActionY, margin + 220.0f, bottomActionY + 44.0f), true, false);
+    } else if (g_state.route == AppRoute::Verifying) {
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, bottomActionY, margin + 220.0f, bottomActionY + 44.0f), true, false);
+    } else if (g_state.route == AppRoute::VerificationFailed) {
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, bottomActionY, margin + 190.0f, bottomActionY + 44.0f), true);
+        SetControl(&g_state.layout.settingsButton, D2D1::RectF(margin + 208.0f, bottomActionY, margin + 418.0f, bottomActionY + 44.0f), true);
+        SetControl(&g_state.layout.technicalDetailsButton, D2D1::RectF(std::max(margin + 436.0f, right - 190.0f), bottomActionY, right, bottomActionY + 44.0f), true);
+    } else if (g_state.route == AppRoute::Ready) {
+        float firstRowY = bottomActionY - 54.0f;
+        SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, firstRowY, margin + 210.0f, firstRowY + 44.0f), true);
+        SetControl(&g_state.layout.settingsButton, D2D1::RectF(margin + 228.0f, firstRowY, margin + 438.0f, firstRowY + 44.0f), true);
+        SetControl(&g_state.layout.technicalDetailsButton, D2D1::RectF(margin, bottomActionY, margin + 210.0f, bottomActionY + 44.0f), true);
+        SetControl(&g_state.layout.exitButton, D2D1::RectF(margin + 228.0f, bottomActionY, margin + 338.0f, bottomActionY + 44.0f), true);
     } else if (g_state.route == AppRoute::Home || g_state.route == AppRoute::ScanResults) {
         float buttonY = g_state.route == AppRoute::Home ? 250.0f : bottomActionY;
         SetControl(&g_state.layout.primaryButton, D2D1::RectF(margin, buttonY, margin + 306.0f, buttonY + 44.0f), true);
@@ -1719,6 +1779,106 @@ std::wstring L10n(const wchar_t* en, const wchar_t* zh, const wchar_t* ja) {
     }
 }
 
+const wchar_t* VerificationStepLabel(int index) {
+    switch (index) {
+    case 0:
+        return L"Refresh installed tool visibility";
+    case 1:
+        return L"Create local Node test project";
+    case 2:
+        return L"Run npm run dev and check HTTP";
+    case 3:
+        return L"Open local page in browser";
+    case 4:
+    default:
+        return L"Open test project in VS Code";
+    }
+}
+
+std::wstring VerificationStatusValue(int index) {
+    if (g_state.verification.failed && g_state.verification.step == index) {
+        return L10n(L"failed", L"失败", L"失敗");
+    }
+    bool done = false;
+    switch (index) {
+    case 0:
+        done = g_state.verification.step > 0 || g_state.verification.succeeded;
+        break;
+    case 1:
+        done = g_state.verification.projectCreated;
+        break;
+    case 2:
+        done = g_state.verification.serviceResponded;
+        break;
+    case 3:
+        done = g_state.verification.browserOpened;
+        break;
+    case 4:
+        done = g_state.verification.vscodeOpened;
+        break;
+    default:
+        break;
+    }
+    if (done) {
+        return L10n(L"passed", L"已通过", L"成功");
+    }
+    if (g_state.verification.active && g_state.verification.step == index) {
+        return L10n(L"running", L"进行中", L"実行中");
+    }
+    return L10n(L"pending", L"等待中", L"待機中");
+}
+
+std::wstring BuildNextPromptTemplate() {
+    if (g_state.preferences.locale == Locale::ZhCn) {
+        return L"请帮我创建一个最小网页项目：使用 HTML、CSS 和 JavaScript 做一个清晰的欢迎页，包含标题、按钮和一段说明。请告诉我每一步要运行的命令，并解释如何在本地浏览器中查看结果。";
+    }
+    if (g_state.preferences.locale == Locale::Ja) {
+        return L"最小のWebプロジェクトを作ってください。HTML、CSS、JavaScriptで見やすいウェルカムページを作り、タイトル、ボタン、短い説明を入れてください。実行するコマンドと、ローカルブラウザーで結果を見る方法も説明してください。";
+    }
+    return L"Help me create a minimal web project with HTML, CSS, and JavaScript. Build a clear welcome page with a title, a button, and a short explanation. Tell me each command to run and how to view the result in my local browser.";
+}
+
+std::wstring BuildVerificationText() {
+    std::wstring text = L10n(L"Local verification\r\n", L"本地验证\r\n", L"ローカル検証\r\n");
+    text += L10n(
+        L"VibeReady checks the actual local run path without downloading dependencies.\r\n\r\n",
+        L"VibeReady 会验证真实本地运行路径，不会下载第三方依赖。\r\n\r\n",
+        L"VibeReady は依存関係をダウンロードせず、実際のローカル実行経路を確認します。\r\n\r\n");
+    for (int i = 0; i < 5; ++i) {
+        text += std::wstring(L"• ") + VerificationStepLabel(i) + L": " + VerificationStatusValue(i) + L"\r\n";
+    }
+    if (!g_state.verification.localUrl.empty()) {
+        text += L"\r\n" + L10n(L"Local page: ", L"本地页面：", L"ローカルページ: ") + g_state.verification.localUrl + L"\r\n";
+    }
+    if (!g_state.verification.errorCode.empty()) {
+        text += L"\r\n" + L10n(L"Error code: ", L"错误码：", L"エラーコード: ") + g_state.verification.errorCode + L"\r\n";
+    }
+    if (!g_state.verification.lastMessage.empty()) {
+        text += L"\r\n" + g_state.verification.lastMessage + L"\r\n";
+    }
+    return text;
+}
+
+std::wstring BuildReadyText() {
+    std::wstring text = L"Ready\r\n";
+    text += L10n(
+        L"This computer has passed the required checks and local verification.\r\n",
+        L"这台电脑已通过必需项检查和本地验证。\r\n",
+        L"このコンピューターは必須チェックとローカル検証に合格しました。\r\n");
+    text += L"\r\n";
+    text += L"• VS Code: ready\r\n";
+    text += L"• Git: ready\r\n";
+    text += L"• Node.js: ready\r\n";
+    text += L"• npm: ready\r\n";
+    if (!g_state.verification.localUrl.empty()) {
+        text += L"\r\n" + L10n(L"Local test page: ", L"本地测试页面：", L"ローカルテストページ: ") + g_state.verification.localUrl + L"\r\n";
+    }
+    text += L"\r\n";
+    text += L10n(L"Next prompt template\r\n", L"下一步提示词模板\r\n", L"次のプロンプトテンプレート\r\n");
+    text += BuildNextPromptTemplate() + L"\r\n";
+    return text;
+}
+
 std::wstring RouteTitle() {
     const Copy& copy = Text(g_state.preferences.locale);
     switch (g_state.route) {
@@ -1736,6 +1896,12 @@ std::wstring RouteTitle() {
         return L10n(L"Fixing required tools", L"正在修复必需工具", L"必須ツールを修復中");
     case AppRoute::ManualSteps:
         return L10n(L"Manual installation steps", L"手动安装步骤", L"手動インストール手順");
+    case AppRoute::Verifying:
+        return L10n(L"Verifying environment", L"正在验证环境", L"環境を検証中");
+    case AppRoute::VerificationFailed:
+        return L10n(L"Verification failed", L"验证失败", L"検証に失敗しました");
+    case AppRoute::Ready:
+        return L"Ready";
     case AppRoute::Home:
     default:
         return L"VibeReady";
@@ -1768,6 +1934,21 @@ std::wstring RouteBody() {
             L"Use official installers when automatic repair is unavailable or fails.",
             L"当自动修复不可用或失败时，请使用官方安装器。",
             L"自動修復が利用できない、または失敗した場合は公式インストーラーを使用します。");
+    case AppRoute::Verifying:
+        return L10n(
+            L"VibeReady is creating a local test project and checking that it really runs.",
+            L"VibeReady 正在创建本地测试项目，并确认它真的可以运行。",
+            L"VibeReady はローカルテストプロジェクトを作成し、実際に動作するか確認しています。");
+    case AppRoute::VerificationFailed:
+        return L10n(
+            L"One verification step did not complete. No project files outside VibeReady were touched.",
+            L"有一个验证步骤未完成。VibeReady 没有访问或修改你的已有项目文件。",
+            L"検証手順の一部が完了しませんでした。既存のプロジェクトファイルには触れていません。");
+    case AppRoute::Ready:
+        return L10n(
+            L"This device is ready for web vibe coding with Git, Node.js, npm, and VS Code.",
+            L"这台设备已准备好使用 Git、Node.js、npm 和 VS Code 进行网页 vibe coding。",
+            L"このデバイスは Git、Node.js、npm、VS Code で Web vibe coding を始められます。");
     case AppRoute::Home:
     default:
         return copy.homeBody;
@@ -2339,7 +2520,7 @@ void DrawHomeOrResults() {
     std::wstring primaryText = copy.primaryAction;
     if (g_state.route == AppRoute::ScanResults) {
         primaryText = BuildRepairPlan().empty()
-            ? std::wstring(copy.rescanAction)
+            ? L10n(L"Verify local project", L"验证本地项目", L"ローカルプロジェクトを検証")
             : L10n(L"Review fix plan", L"查看修复计划", L"修復プランを確認");
     }
 
@@ -2399,7 +2580,8 @@ void DrawTextPanel(const std::wstring& title, const std::wstring& text) {
     D2D1_SIZE_F size = ui.Size();
     float margin = size.width < 720.0f ? 28.0f : 40.0f;
     float right = std::max(margin + 320.0f, size.width - margin);
-    D2D1_RECT_F section = D2D1::RectF(margin, 210.0f, right, std::max(458.0f, size.height - 112.0f));
+    float bottomReserve = g_state.route == AppRoute::Ready ? 174.0f : 112.0f;
+    D2D1_RECT_F section = D2D1::RectF(margin, 210.0f, right, std::max(458.0f, size.height - bottomReserve));
     ui.DrawSection(vibeready::ui::SectionSpec{section, title});
     ui.DrawTextBlock(text, D2D1::RectF(section.left + 18.0f, section.top + 48.0f, section.right - 18.0f, section.bottom - 18.0f),
         vibeready::ui::TextRole::Code, tokens.colors.text);
@@ -2480,6 +2662,67 @@ void DrawManualStepsScreen() {
         false});
 }
 
+void DrawVerificationScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(RouteTitle(), BuildVerificationText());
+
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        L10n(L"Verifying...", L"正在验证...", L"検証中..."),
+        ControlStateFor(UiControl::PrimaryButton, true),
+        true});
+}
+
+void DrawVerificationFailedScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(RouteTitle(), BuildVerificationText());
+
+    std::wstring secondary = g_state.verification.errorCode == L"BROWSER_OPEN_FAILED"
+        ? L10n(L"Copy local address", L"复制本地地址", L"ローカルアドレスをコピー")
+        : L10n(L"Manual steps", L"手动步骤", L"手動手順");
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        L10n(L"Try again", L"重试", L"もう一度試す"),
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        secondary,
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        L10n(L"Back to results", L"返回结果", L"結果に戻る"),
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+}
+
+void DrawReadyScreen() {
+    vibeready::ui::Foundation& ui = g_state.ui;
+    DrawTextPanel(L"Ready", BuildReadyText());
+
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.primaryButton.rect,
+        L10n(L"Open VS Code", L"打开 VS Code", L"VS Code を開く"),
+        ControlStateFor(UiControl::PrimaryButton),
+        true});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.settingsButton.rect,
+        L10n(L"Copy prompt", L"复制提示词", L"プロンプトをコピー"),
+        ControlStateFor(UiControl::SettingsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.technicalDetailsButton.rect,
+        Text(g_state.preferences.locale).rescanAction,
+        ControlStateFor(UiControl::TechnicalDetailsButton),
+        false});
+    ui.DrawButton(vibeready::ui::ButtonSpec{
+        g_state.layout.exitButton.rect,
+        L10n(L"Exit", L"退出", L"終了"),
+        ControlStateFor(UiControl::ExitButton),
+        false});
+}
+
 void DrawMainWindow(HWND hwnd) {
     UpdateLayout(hwnd);
     DrawHeader();
@@ -2499,6 +2742,15 @@ void DrawMainWindow(HWND hwnd) {
         break;
     case AppRoute::ManualSteps:
         DrawManualStepsScreen();
+        break;
+    case AppRoute::Verifying:
+        DrawVerificationScreen();
+        break;
+    case AppRoute::VerificationFailed:
+        DrawVerificationFailedScreen();
+        break;
+    case AppRoute::Ready:
+        DrawReadyScreen();
         break;
     case AppRoute::ScanResults:
     case AppRoute::Home:
@@ -2664,6 +2916,449 @@ void PaintMainWindow(HWND hwnd) {
         AppendLog(L"Direct2D begin draw failed: " + std::to_wstring(static_cast<unsigned long>(beginResult)));
     }
     EndPaint(hwnd, &paint);
+}
+
+std::wstring ReadRegistryEnvironmentValue(HKEY root, const wchar_t* subkey, const wchar_t* valueName) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+        return L"";
+    }
+    std::wstring value;
+    QueryRegistryString(key, valueName, &value);
+    RegCloseKey(key);
+    return value;
+}
+
+void AppendPathPart(std::wstring* path, const std::wstring& part) {
+    if (part.empty()) {
+        return;
+    }
+    if (!path->empty() && path->back() != L';') {
+        *path += L";";
+    }
+    *path += part;
+}
+
+void RefreshProcessEnvironmentPath() {
+    std::wstring combined = EnvironmentPath(L"PATH");
+    AppendPathPart(&combined, ReadRegistryEnvironmentValue(
+        HKEY_LOCAL_MACHINE,
+        L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+        L"Path"));
+    AppendPathPart(&combined, ReadRegistryEnvironmentValue(
+        HKEY_CURRENT_USER,
+        L"Environment",
+        L"Path"));
+    if (!combined.empty()) {
+        SetEnvironmentVariableW(L"PATH", combined.c_str());
+        AppendLog(L"process PATH refreshed from registry");
+    }
+}
+
+bool AllRequiredToolsReady() {
+    return g_state.checks.supportedWindows &&
+        g_state.checks.x64 &&
+        g_state.checks.tempWritable &&
+        g_state.checks.configWritable &&
+        g_state.checks.vscode.state == ToolState::Ready &&
+        g_state.checks.git.state == ToolState::Ready &&
+        g_state.checks.node.state == ToolState::Ready &&
+        g_state.checks.npm.state == ToolState::Ready;
+}
+
+std::wstring FirstVerificationErrorCode() {
+    if (!g_state.checks.supportedWindows) {
+        return L"UNSUPPORTED_WINDOWS_VERSION";
+    }
+    if (!g_state.checks.x64) {
+        return L"UNSUPPORTED_ARCHITECTURE";
+    }
+    if (!g_state.checks.tempWritable) {
+        return L"TEMP_DIR_UNWRITABLE";
+    }
+    if (!g_state.checks.configWritable) {
+        return L"CONFIG_DIR_UNWRITABLE";
+    }
+    if (g_state.checks.vscode.state != ToolState::Ready) {
+        return g_state.checks.vscode.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.vscode.errorCode;
+    }
+    if (g_state.checks.git.state != ToolState::Ready) {
+        return g_state.checks.git.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.git.errorCode;
+    }
+    if (g_state.checks.node.state != ToolState::Ready) {
+        return g_state.checks.node.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.node.errorCode;
+    }
+    if (g_state.checks.npm.state != ToolState::Ready) {
+        return g_state.checks.npm.errorCode.empty() ? L"VERIFY_FAILED" : g_state.checks.npm.errorCode;
+    }
+    return L"VERIFY_FAILED";
+}
+
+std::wstring ResolveCommandPath(const wchar_t* command) {
+    DWORD needed = SearchPathW(nullptr, command, nullptr, 0, nullptr, nullptr);
+    if (needed == 0) {
+        return L"";
+    }
+    std::wstring path(static_cast<size_t>(needed) + 1, L'\0');
+    DWORD written = SearchPathW(nullptr, command, nullptr, static_cast<DWORD>(path.size()), path.data(), nullptr);
+    if (written == 0 || static_cast<size_t>(written) >= path.size()) {
+        return L"";
+    }
+    path.resize(written);
+    return path;
+}
+
+void TerminateProcessTree(PROCESS_INFORMATION* process) {
+    if (!process || !process->hProcess) {
+        return;
+    }
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(process->hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+        DWORD taskkillExit = 1;
+        std::wstring commandLine = L"taskkill.exe /PID " + std::to_wstring(process->dwProcessId) + L" /T /F";
+        RunProcessWithTimeout(commandLine, L"", 5000, &taskkillExit);
+        if (GetExitCodeProcess(process->hProcess, &exitCode) && exitCode == STILL_ACTIVE) {
+            TerminateProcess(process->hProcess, 1);
+        }
+    }
+    if (process->hThread) {
+        CloseHandle(process->hThread);
+    }
+    CloseHandle(process->hProcess);
+    *process = PROCESS_INFORMATION{};
+}
+
+void StopVerificationServer() {
+    TerminateProcessTree(&g_state.verification.serverProcess);
+    g_state.verification.serviceStarted = false;
+}
+
+bool WriteLocalTestProject(std::wstring* projectDir) {
+    if (g_state.checks.configDir.empty()) {
+        return false;
+    }
+    CreateDirectoryW(g_state.checks.configDir.c_str(), nullptr);
+    std::wstring dir = JoinPath(g_state.checks.configDir, L"local-test-project");
+    DWORD attributes = GetFileAttributesW(dir.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        DeleteDirectoryTree(dir);
+    }
+    if (!CreateDirectoryW(dir.c_str(), nullptr)) {
+        return false;
+    }
+
+    std::wstring packageJson =
+        L"{\r\n"
+        L"  \"name\": \"vibeready-local-test\",\r\n"
+        L"  \"version\": \"1.0.0\",\r\n"
+        L"  \"private\": true,\r\n"
+        L"  \"scripts\": {\r\n"
+        L"    \"dev\": \"node server.js\"\r\n"
+        L"  }\r\n"
+        L"}\r\n";
+    std::wstring serverJs =
+        L"const http = require('http');\n"
+        L"const fs = require('fs');\n"
+        L"const path = require('path');\n"
+        L"const port = Number(process.env.VIBEREADY_PORT || '5173');\n"
+        L"const page = fs.readFileSync(path.join(__dirname, 'index.html'));\n"
+        L"const server = http.createServer((req, res) => {\n"
+        L"  res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});\n"
+        L"  res.end(page);\n"
+        L"});\n"
+        L"server.listen(port, '127.0.0.1', () => {\n"
+        L"  console.log(`VibeReady test server ready http://127.0.0.1:${port}`);\n"
+        L"});\n";
+    std::wstring indexHtml =
+        L"<!doctype html>\n"
+        L"<html lang=\"en\">\n"
+        L"<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+        L"<title>VibeReady local test</title>\n"
+        L"<style>body{font-family:Segoe UI,Arial,sans-serif;margin:48px;background:#f6f7f9;color:#171a1f}main{max-width:720px}button{padding:10px 16px;border:0;background:#176b70;color:white;border-radius:6px}</style>\n"
+        L"</head><body><main><h1>VibeReady local test is running</h1><p>Your local Node.js and npm workflow is ready for web vibe coding.</p><button>Ready</button></main></body></html>\n";
+
+    if (!WriteTextFile(JoinPath(dir, L"package.json"), packageJson, false) ||
+        !WriteTextFile(JoinPath(dir, L"server.js"), serverJs, false) ||
+        !WriteTextFile(JoinPath(dir, L"index.html"), indexHtml, false)) {
+        DeleteDirectoryTree(dir);
+        return false;
+    }
+
+    *projectDir = dir;
+    return true;
+}
+
+bool ProbeLocalHttp(DWORD port) {
+    HINTERNET session = WinHttpOpen(L"VibeReady/0.1", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        return false;
+    }
+    WinHttpSetTimeouts(session, 500, 500, 500, 500);
+    HINTERNET connection = WinHttpConnect(session, L"127.0.0.1", static_cast<INTERNET_PORT>(port), 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        return false;
+    }
+    HINTERNET request = WinHttpOpenRequest(connection, L"GET", L"/", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+    BOOL ok = WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+        WinHttpReceiveResponse(request, nullptr);
+    DWORD statusCode = 0;
+    DWORD statusCodeSize = sizeof(statusCode);
+    bool ready = ok &&
+        WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+            &statusCode, &statusCodeSize, WINHTTP_NO_HEADER_INDEX) &&
+        statusCode == 200;
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return ready;
+}
+
+bool StartNpmDevServer(DWORD port, PROCESS_INFORMATION* process) {
+    std::wstring commandLine = L"cmd.exe /d /s /c \"set VIBEREADY_PORT=" + std::to_wstring(port) + L"&& npm.cmd run dev\"";
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    BOOL created = CreateProcessW(
+        nullptr,
+        commandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        g_state.verification.projectDir.c_str(),
+        &startup,
+        process);
+    return created != FALSE;
+}
+
+bool StartAndVerifyLocalServer() {
+    DWORD seed = GetTickCount();
+    for (DWORD attempt = 0; attempt < 8; ++attempt) {
+        DWORD port = 51230 + ((seed + attempt) % 700);
+        PROCESS_INFORMATION process = {};
+        if (!StartNpmDevServer(port, &process)) {
+            continue;
+        }
+        g_state.verification.serviceStarted = true;
+        g_state.verification.port = port;
+        g_state.verification.localUrl = L"http://127.0.0.1:" + std::to_wstring(port);
+        for (int probe = 0; probe < 28; ++probe) {
+            if (ProbeLocalHttp(port)) {
+                g_state.verification.serverProcess = process;
+                g_state.verification.serviceResponded = true;
+                return true;
+            }
+            DWORD exitCode = 0;
+            if (GetExitCodeProcess(process.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                break;
+            }
+            Sleep(250);
+        }
+        TerminateProcessTree(&process);
+    }
+    return false;
+}
+
+bool OpenDefaultBrowserToLocalPage() {
+    if (g_state.verification.localUrl.empty()) {
+        return false;
+    }
+    HINSTANCE result = ShellExecuteW(g_state.window, L"open", g_state.verification.localUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<INT_PTR>(result) > 32;
+}
+
+std::wstring FindVscodeExecutablePath() {
+    if (!g_state.checks.vscode.executablePath.empty() && FileExists(g_state.checks.vscode.executablePath)) {
+        return g_state.checks.vscode.executablePath;
+    }
+    VscodeScanResult latest = RunVscodeScan();
+    g_state.checks.vscode = latest;
+    if (!latest.executablePath.empty() && FileExists(latest.executablePath)) {
+        return latest.executablePath;
+    }
+    std::wstring codeCmd = ResolveCommandPath(L"code.cmd");
+    if (!codeCmd.empty()) {
+        return codeCmd;
+    }
+    return ResolveCommandPath(L"code.exe");
+}
+
+bool OpenProjectFolderFallback() {
+    HINSTANCE result = ShellExecuteW(g_state.window, L"open", g_state.verification.projectDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    g_state.verification.folderFallbackOpened = reinterpret_cast<INT_PTR>(result) > 32;
+    return g_state.verification.folderFallbackOpened;
+}
+
+bool OpenVscodeProject(bool allowFolderFallback) {
+    if (g_state.verification.projectDir.empty()) {
+        return false;
+    }
+    std::wstring vscode = FindVscodeExecutablePath();
+    if (!vscode.empty()) {
+        std::wstring parameter = QuoteArgument(g_state.verification.projectDir);
+        HINSTANCE result = ShellExecuteW(g_state.window, L"open", vscode.c_str(), parameter.c_str(), nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) > 32) {
+            g_state.verification.vscodeOpened = true;
+            return true;
+        }
+    }
+    if (allowFolderFallback) {
+        OpenProjectFolderFallback();
+    }
+    return false;
+}
+
+void FailVerification(const std::wstring& errorCode, const std::wstring& message) {
+    if (g_state.window) {
+        KillTimer(g_state.window, kVerificationTimerId);
+    }
+    g_state.verification.active = false;
+    g_state.verification.completed = true;
+    g_state.verification.succeeded = false;
+    g_state.verification.failed = true;
+    g_state.verification.errorCode = errorCode.empty() ? L"VERIFY_FAILED" : errorCode;
+    g_state.verification.lastMessage = message;
+    g_state.route = AppRoute::VerificationFailed;
+    AppendLog(L"verification_completed overall_state=error error_code=" + g_state.verification.errorCode);
+    RefreshUi();
+}
+
+void CompleteVerification() {
+    if (g_state.window) {
+        KillTimer(g_state.window, kVerificationTimerId);
+    }
+    g_state.verification.active = false;
+    g_state.verification.completed = true;
+    g_state.verification.succeeded = true;
+    g_state.verification.failed = false;
+    g_state.verification.errorCode.clear();
+    g_state.verification.lastMessage = L10n(
+        L"Local verification passed. The Ready page uses only local templates.",
+        L"本地验证已通过。Ready 页只使用本地提示词模板。",
+        L"ローカル検証に合格しました。Ready ページはローカルテンプレートのみを使用します。");
+    g_state.route = AppRoute::Ready;
+    AppendLog(L"verification_completed overall_state=ready");
+    AppendLog(L"ready_reached verified_tool_count=4");
+    RefreshUi();
+}
+
+void AdvanceVerificationFlow() {
+    if (!g_state.verification.active) {
+        if (g_state.window) {
+            KillTimer(g_state.window, kVerificationTimerId);
+        }
+        return;
+    }
+
+    switch (g_state.verification.step) {
+    case 0:
+        g_state.verification.lastMessage = L10n(
+            L"Refreshing installed tool visibility.",
+            L"正在刷新已安装工具的可见性。",
+            L"インストール済みツールの認識を更新しています。");
+        RefreshUi();
+        UpdateWindow(g_state.window);
+        RefreshProcessEnvironmentPath();
+        g_state.checks = RunStartupChecks();
+        if (!AllRequiredToolsReady()) {
+            FailVerification(FirstVerificationErrorCode(), L10n(
+                L"VibeReady still cannot start one required tool. Retry after reopening VibeReady if an installer just finished.",
+                L"VibeReady 仍无法启动某个必需工具。如果安装刚完成，请重新打开 VibeReady 后重试。",
+                L"必須ツールの一部をまだ起動できません。インストール直後の場合は VibeReady を再起動してから再試行してください。"));
+            return;
+        }
+        g_state.verification.step = 1;
+        break;
+    case 1:
+        g_state.verification.lastMessage = L10n(
+            L"Creating a local test project in VibeReady app data.",
+            L"正在 VibeReady 应用数据目录创建本地测试项目。",
+            L"VibeReady のアプリデータにローカルテストプロジェクトを作成しています。");
+        RefreshUi();
+        UpdateWindow(g_state.window);
+        if (!WriteLocalTestProject(&g_state.verification.projectDir)) {
+            FailVerification(L"VERIFY_FAILED", L10n(
+                L"VibeReady could not create the local test project.",
+                L"VibeReady 无法创建本地测试项目。",
+                L"ローカルテストプロジェクトを作成できませんでした。"));
+            return;
+        }
+        g_state.verification.projectCreated = true;
+        g_state.verification.step = 2;
+        break;
+    case 2:
+        g_state.verification.lastMessage = L10n(
+            L"Starting npm run dev and waiting for the local page.",
+            L"正在启动 npm run dev，并等待本地页面响应。",
+            L"npm run dev を起動し、ローカルページの応答を待っています。");
+        RefreshUi();
+        UpdateWindow(g_state.window);
+        if (!StartAndVerifyLocalServer()) {
+            FailVerification(L"LOCAL_SERVER_FAILED", L10n(
+                L"The local Node test server did not respond in time.",
+                L"本地 Node 测试服务未及时响应。",
+                L"ローカル Node テストサーバーが時間内に応答しませんでした。"));
+            return;
+        }
+        g_state.verification.step = 3;
+        break;
+    case 3:
+        g_state.verification.lastMessage = L10n(
+            L"Opening the local page with the default browser.",
+            L"正在使用默认浏览器打开本地页面。",
+            L"既定のブラウザーでローカルページを開いています。");
+        RefreshUi();
+        UpdateWindow(g_state.window);
+        if (!OpenDefaultBrowserToLocalPage()) {
+            FailVerification(L"BROWSER_OPEN_FAILED", L10n(
+                L"The local server is running. Copy the local address and open it in any browser.",
+                L"本地服务已经运行。请复制本地地址，并用任意浏览器打开。",
+                L"ローカルサーバーは実行中です。ローカルアドレスをコピーして任意のブラウザーで開いてください。"));
+            return;
+        }
+        g_state.verification.browserOpened = true;
+        g_state.verification.step = 4;
+        break;
+    case 4:
+        g_state.verification.lastMessage = L10n(
+            L"Opening the test project in VS Code.",
+            L"正在用 VS Code 打开测试项目。",
+            L"VS Code でテストプロジェクトを開いています。");
+        RefreshUi();
+        UpdateWindow(g_state.window);
+        if (!OpenVscodeProject(true)) {
+            FailVerification(L"VSCODE_OPEN_FAILED", L10n(
+                L"VS Code did not open the test project automatically. The project folder fallback was offered.",
+                L"VS Code 未能自动打开测试项目，已尝试提供项目文件夹作为备用入口。",
+                L"VS Code でテストプロジェクトを自動的に開けませんでした。代わりにプロジェクトフォルダーを開こうとしました。"));
+            return;
+        }
+        g_state.verification.step = 5;
+        break;
+    default:
+        CompleteVerification();
+        return;
+    }
+
+    RefreshUi();
+}
+
+void StartVerificationFlow() {
+    StopVerificationServer();
+    g_state.verification = VerificationState{};
+    g_state.verification.active = true;
+    g_state.verification.step = 0;
+    g_state.route = AppRoute::Verifying;
+    g_state.showTechnicalDetails = false;
+    AppendLog(L"verification_started");
+    SetTimer(g_state.window, kVerificationTimerId, 250, nullptr);
+    RefreshUi();
 }
 
 void FailRepairItem(RepairPlanItem* item, const std::wstring& errorCode, DWORD exitCode = 0) {
@@ -2841,6 +3536,33 @@ void CopyManualSteps() {
     }
 }
 
+void CopyLocalAddress() {
+    if (!g_state.verification.localUrl.empty() && CopyTextToClipboard(g_state.verification.localUrl)) {
+        AppendLog(L"local test address copied");
+        MessageBoxW(g_state.window,
+            L10n(L"Local address copied.", L"本地地址已复制。", L"ローカルアドレスをコピーしました。").c_str(),
+            kWindowTitle, MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    MessageBoxW(g_state.window,
+        L10n(L"Could not copy the local address.", L"无法复制本地地址。", L"ローカルアドレスをコピーできませんでした。").c_str(),
+        kWindowTitle, MB_ICONERROR | MB_OK);
+}
+
+void CopyReadyPrompt() {
+    std::wstring prompt = BuildNextPromptTemplate();
+    if (CopyTextToClipboard(prompt)) {
+        AppendLog(L"ready prompt copied");
+        MessageBoxW(g_state.window,
+            L10n(L"Prompt copied.", L"提示词已复制。", L"プロンプトをコピーしました。").c_str(),
+            kWindowTitle, MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    MessageBoxW(g_state.window,
+        L10n(L"Could not copy the prompt.", L"无法复制提示词。", L"プロンプトをコピーできませんでした。").c_str(),
+        kWindowTitle, MB_ICONERROR | MB_OK);
+}
+
 void ActivateControl(UiControl control) {
     if (!ControlEnabled(control)) {
         return;
@@ -2872,6 +3594,14 @@ void ActivateControl(UiControl control) {
             EnterManualSteps(FirstManualRepairTool());
         } else if (g_state.route == AppRoute::ManualSteps) {
             OpenManualDownloadPage();
+        } else if (g_state.route == AppRoute::VerificationFailed) {
+            if (g_state.verification.errorCode == L"BROWSER_OPEN_FAILED") {
+                CopyLocalAddress();
+            } else {
+                EnterManualSteps(FirstManualRepairTool());
+            }
+        } else if (g_state.route == AppRoute::Ready) {
+            CopyReadyPrompt();
         } else {
             EnterLanguageTelemetry();
         }
@@ -2884,6 +3614,12 @@ void ActivateControl(UiControl control) {
             EnterScanResults();
         } else if (g_state.route == AppRoute::ManualSteps) {
             CopyManualSteps();
+        } else if (g_state.route == AppRoute::VerificationFailed) {
+            EnterScanResults();
+        } else if (g_state.route == AppRoute::Ready) {
+            EnterScanning();
+            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            AppendLog(L"ready page rescan started");
         } else {
             g_state.showTechnicalDetails = !g_state.showTechnicalDetails;
         }
@@ -2912,10 +3648,8 @@ void ActivateControl(UiControl control) {
                 RefreshUi();
                 break;
             }
-            EnterScanning();
-            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
-            RefreshUi();
-            AppendLog(L"read-only environment rescan started");
+            StartVerificationFlow();
+            AppendLog(L"local verification requested from scan results");
         } else if (g_state.route == AppRoute::FixPlan) {
             StartRepairFlow();
             AppendLog(L"repair flow requested");
@@ -2924,17 +3658,27 @@ void ActivateControl(UiControl control) {
                 StartRepairFlow();
                 AppendLog(L"repair flow retry requested");
             } else if (g_state.repair.completed) {
-                EnterScanning();
-                SetTimer(g_state.window, kScanTimerId, 500, nullptr);
-                AppendLog(L"post-repair rescan started");
-                RefreshUi();
+                StartVerificationFlow();
+                AppendLog(L"post-repair verification started");
             }
         } else if (g_state.route == AppRoute::ManualSteps) {
-            EnterScanning();
-            SetTimer(g_state.window, kScanTimerId, 500, nullptr);
-            AppendLog(L"manual install rescan started");
-            RefreshUi();
+            StartVerificationFlow();
+            AppendLog(L"manual install verification started");
+        } else if (g_state.route == AppRoute::VerificationFailed) {
+            StartVerificationFlow();
+            AppendLog(L"verification retry requested");
+        } else if (g_state.route == AppRoute::Ready) {
+            if (!OpenVscodeProject(true)) {
+                MessageBoxW(g_state.window,
+                    L10n(L"VS Code could not open automatically. The test project folder was opened instead.",
+                        L"无法自动打开 VS Code。已尝试改为打开测试项目文件夹。",
+                        L"VS Code を自動で開けませんでした。代わりにテストプロジェクトフォルダーを開こうとしました。").c_str(),
+                    kWindowTitle, MB_ICONWARNING | MB_OK);
+            }
         }
+        break;
+    case UiControl::ExitButton:
+        PostMessageW(g_state.window, WM_CLOSE, 0, 0);
         break;
     case UiControl::None:
     default:
@@ -2997,6 +3741,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         }
         if (wparam == kRepairTimerId) {
             AdvanceRepairFlow();
+        }
+        if (wparam == kVerificationTimerId) {
+            AdvanceVerificationFlow();
         }
         return 0;
 
@@ -3130,6 +3877,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
                 RefreshUi();
                 return 0;
             }
+            if (g_state.route == AppRoute::VerificationFailed || g_state.route == AppRoute::Ready) {
+                EnterScanResults();
+                RefreshUi();
+                return 0;
+            }
         }
         break;
 
@@ -3145,6 +3897,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
 
     case WM_DESTROY:
+        StopVerificationServer();
         AppendLog(L"shutdown");
         g_state.ui.DiscardDeviceResources();
         PostQuitMessage(0);
