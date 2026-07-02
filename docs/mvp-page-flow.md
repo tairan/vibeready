@@ -50,6 +50,18 @@ No other screen may introduce an equivalent primary CTA for starting the environ
 16. `verification_failed` can retry `scanning` or open `manual_steps`.
 17. `settings` is reachable from `home`, `ready`, and non-blocking error screens. Saving settings returns to the previous screen.
 
+## Navigation Rules
+
+- `home` is the navigation root and does not show Back.
+- All non-root, non-blocking screens show a consistent top Back control instead of using footer buttons for global navigation.
+- `scanning` is read-only, so Back, Escape, and Alt+Left cancel the scan and return to `home`.
+- Canceling `scanning` must stop the scan timer and must not later advance to `scan_results`.
+- `scan_results` returns to `home`.
+- `fix_plan`, completed or failed `fix_progress`, `manual_steps`, `verification_failed`, and `ready` return to `scan_results`.
+- Active `fix_progress` and active `verifying` do not allow Back, Escape, or Alt+Left because those phases may be running installs or local verification processes.
+- `settings` uses the same preference controls as first-run setup, but it is a separate route. Save returns to the source screen. Back or Cancel returns to the source screen without applying draft language, telemetry, or theme changes.
+- Footer buttons are reserved for the current screen's task actions such as starting repair, opening manual instructions, copying details, copying the Ready prompt, or rescanning.
+
 ## Non-Goals
 
 - No project creation flow.

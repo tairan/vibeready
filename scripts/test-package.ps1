@@ -38,7 +38,7 @@ try {
     }
 
     if (-not $SkipSmoke) {
-        $smoke = & (Join-Path $PSScriptRoot "test-smoke.ps1") -ExePath $exePath -AppDataDir $appDataDir -VerifyUiControls
+        $smoke = & (Join-Path $PSScriptRoot "test-smoke.ps1") -ExePath $exePath -AppDataDir $appDataDir -VerifyUiControls -VerifyNavigation
         $result.Smoke = $smoke
     }
 

@@ -2,7 +2,8 @@ param(
     [string]$ExePath,
     [string]$AppDataDir,
     [int]$TimeoutSeconds = 10,
-    [switch]$VerifyUiControls
+    [switch]$VerifyUiControls,
+    [switch]$VerifyNavigation
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,10 +16,24 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
     throw "VibeReady.exe not found: $ExePath"
 }
 
+Get-Process -Name "VibeReady" -ErrorAction SilentlyContinue | Stop-Process -Force
+
 if (-not $AppDataDir) {
     $AppDataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("VibeReadySmoke-" + [System.Guid]::NewGuid().ToString("N"))
 }
 New-Item -ItemType Directory -Path $AppDataDir -Force | Out-Null
+
+if ($VerifyNavigation) {
+    $configDir = Join-Path $AppDataDir "VibeReady"
+    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    $configPath = Join-Path $configDir "config.ini"
+    Set-Content -LiteralPath $configPath -Encoding UTF8 -Value @(
+        "[preferences]",
+        "language=en",
+        "telemetry=0",
+        "darkTheme=0"
+    )
+}
 
 Add-Type -TypeDefinition @"
 using System;
@@ -50,6 +65,9 @@ public static class VibeReadySmokeWin32 {
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hwnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hwnd, uint msg, UIntPtr wParam, IntPtr lParam);
 
 }
 "@
@@ -147,10 +165,47 @@ try {
         }
     }
 
+    if ($VerifyNavigation) {
+        $wmKeyDown = [uint32]0x0100
+        $vkReturn = [uint32]0x0D
+        $vkEscape = [uint32]0x1B
+        Start-Sleep -Milliseconds 800
+        [void][VibeReadySmokeWin32]::PostMessage($mainWindow, $wmKeyDown, [UIntPtr]::new($vkReturn), [System.IntPtr]::Zero)
+        Start-Sleep -Milliseconds 300
+        [void][VibeReadySmokeWin32]::PostMessage($mainWindow, $wmKeyDown, [UIntPtr]::new($vkEscape), [System.IntPtr]::Zero)
+        Start-Sleep -Milliseconds 1200
+
+        if ($process.HasExited) {
+            throw "VibeReady.exe exited during navigation verification with code $($process.ExitCode)."
+        }
+
+        $logPath = Join-Path (Join-Path $AppDataDir "VibeReady") "vibeready.log"
+        $logObserved = Test-Path -LiteralPath $logPath
+        $cancelLogged = $false
+        if ($logObserved) {
+            $log = Get-Content -Raw -Encoding UTF8 -LiteralPath $logPath
+            $cancelLogged = $log.Contains("scan_canceled_by_navigation")
+            if ($log.Contains("scan flow finished") -and -not $cancelLogged) {
+                throw "Navigation verification failed: scan finished without a cancellation event."
+            }
+        }
+
+        $result.Navigation = [pscustomobject]@{
+            EnterKeySent = $true
+            EscapeKeySent = $true
+            ProcessAliveAfterNavigation = (-not $process.HasExited)
+            CancelLogObserved = $cancelLogged
+            LogPath = $logPath
+        }
+    }
+
     [pscustomobject]$result
 } finally {
-    if ($process -and -not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force
-        $process.WaitForExit(5000)
+    if ($process) {
+        if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force
+            [void]$process.WaitForExit(5000)
+        }
+        $process.Dispose()
     }
 }

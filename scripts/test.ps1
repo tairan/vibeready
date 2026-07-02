@@ -10,6 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 & (Join-Path $PSScriptRoot "validate-rules.ps1")
 & (Join-Path $PSScriptRoot "Validate-M3.ps1")
 & (Join-Path $PSScriptRoot "Validate-M4.ps1")
+& (Join-Path $PSScriptRoot "Validate-CHI66.ps1")
 
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build-release.ps1")
