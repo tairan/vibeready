@@ -3,6 +3,10 @@ param(
     [string]$AppDataDir,
     [int]$TimeoutSeconds = 10,
     [switch]$VerifyUiControls,
+    [switch]$VerifyResponsiveness,
+    [int]$ResponsivenessDurationSeconds = 10,
+    [int]$ResponsivenessProbeTimeoutMs = 100,
+    [int]$MaxUnresponsiveMs = 1000,
     [switch]$VerifyNavigation
 )
 
@@ -69,6 +73,9 @@ public static class VibeReadySmokeWin32 {
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hwnd, uint msg, UIntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint msg, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
+
 }
 "@
 
@@ -101,6 +108,92 @@ function Get-ChildWindowHandles {
     }
     [void][VibeReadySmokeWin32]::EnumChildWindows($Parent, $callback, [System.IntPtr]::Zero)
     return $children
+}
+
+function Test-WindowResponsive {
+    param(
+        [System.IntPtr]$Handle,
+        [int]$TimeoutMs
+    )
+
+    $wmNull = [uint32]0x0000
+    $smtoAbortIfHung = [uint32]0x0002
+    $messageResult = [UIntPtr]::Zero
+    $sendResult = [VibeReadySmokeWin32]::SendMessageTimeout(
+        $Handle,
+        $wmNull,
+        [UIntPtr]::Zero,
+        [System.IntPtr]::Zero,
+        $smtoAbortIfHung,
+        [uint32]$TimeoutMs,
+        [ref]$messageResult)
+    return $sendResult -ne [System.IntPtr]::Zero
+}
+
+function Measure-WindowResponsiveness {
+    param(
+        [System.IntPtr]$Handle,
+        [System.Diagnostics.Process]$Process,
+        [int]$DurationSeconds,
+        [int]$ProbeTimeoutMs,
+        [int]$MaxContinuousUnresponsiveMs
+    )
+
+    $probeIntervalMs = 100
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $unresponsiveStartedAtMs = $null
+    $maxObservedUnresponsiveMs = 0.0
+    $probeCount = 0
+    $failedProbeCount = 0
+
+    while ($stopwatch.Elapsed.TotalMilliseconds -lt ($DurationSeconds * 1000)) {
+        if ($Process.HasExited) {
+            throw "VibeReady.exe exited during responsiveness verification with code $($Process.ExitCode)."
+        }
+
+        $probeStartedAtMs = $stopwatch.Elapsed.TotalMilliseconds
+        $responsive = Test-WindowResponsive -Handle $Handle -TimeoutMs $ProbeTimeoutMs
+        $probeEndedAtMs = $stopwatch.Elapsed.TotalMilliseconds
+        $probeCount++
+
+        if ($responsive) {
+            if ($null -ne $unresponsiveStartedAtMs) {
+                $maxObservedUnresponsiveMs = [Math]::Max($maxObservedUnresponsiveMs, $probeEndedAtMs - $unresponsiveStartedAtMs)
+                $unresponsiveStartedAtMs = $null
+            }
+        } else {
+            $failedProbeCount++
+            if ($null -eq $unresponsiveStartedAtMs) {
+                $unresponsiveStartedAtMs = $probeStartedAtMs
+            }
+            $maxObservedUnresponsiveMs = [Math]::Max($maxObservedUnresponsiveMs, $probeEndedAtMs - $unresponsiveStartedAtMs)
+            if ($maxObservedUnresponsiveMs -gt $MaxContinuousUnresponsiveMs) {
+                throw "VibeReady main window was continuously unresponsive for $([int]$maxObservedUnresponsiveMs)ms, exceeding ${MaxContinuousUnresponsiveMs}ms."
+            }
+        }
+
+        $elapsedProbeMs = [int]($stopwatch.Elapsed.TotalMilliseconds - $probeStartedAtMs)
+        $sleepMs = $probeIntervalMs - $elapsedProbeMs
+        if ($sleepMs -gt 0) {
+            Start-Sleep -Milliseconds $sleepMs
+        }
+    }
+
+    if ($null -ne $unresponsiveStartedAtMs) {
+        $maxObservedUnresponsiveMs = [Math]::Max($maxObservedUnresponsiveMs, $stopwatch.Elapsed.TotalMilliseconds - $unresponsiveStartedAtMs)
+    }
+    if ($maxObservedUnresponsiveMs -gt $MaxContinuousUnresponsiveMs) {
+        throw "VibeReady main window was continuously unresponsive for $([int]$maxObservedUnresponsiveMs)ms, exceeding ${MaxContinuousUnresponsiveMs}ms."
+    }
+
+    return [pscustomobject]@{
+        ProbeCount = $probeCount
+        FailedProbeCount = $failedProbeCount
+        MaxContinuousUnresponsiveMs = [int]$maxObservedUnresponsiveMs
+        AllowedContinuousUnresponsiveMs = $MaxContinuousUnresponsiveMs
+        DurationSeconds = $DurationSeconds
+        ProbeTimeoutMs = $ProbeTimeoutMs
+    }
 }
 
 $process = $null
@@ -139,6 +232,15 @@ try {
         AppDataDir = (Resolve-Path -LiteralPath $AppDataDir).Path
     }
 
+    if ($VerifyResponsiveness) {
+        $result.Responsiveness = Measure-WindowResponsiveness `
+            -Handle $mainWindow `
+            -Process $process `
+            -DurationSeconds $ResponsivenessDurationSeconds `
+            -ProbeTimeoutMs $ResponsivenessProbeTimeoutMs `
+            -MaxContinuousUnresponsiveMs $MaxUnresponsiveMs
+    }
+
     if ($VerifyUiControls) {
         Start-Sleep -Milliseconds 500
         if ($process.HasExited) {
@@ -152,7 +254,7 @@ try {
             throw "VibeReady client area is unexpectedly small: ${clientWidth}x${clientHeight}."
         }
 
-        $children = Get-ChildWindowHandles -Parent $mainWindow
+        $children = @(Get-ChildWindowHandles -Parent $mainWindow)
         if ($children.Count -ne 0) {
             throw "Expected Direct2D self-drawn UI with no default child controls, but found $($children.Count) child window(s)."
         }

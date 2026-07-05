@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "source_issue": "CHI-39",
+  "source_rules": "specs/vibeready-rules.json",
+  "batch": {
+    "max_body_bytes": 65536,
+    "max_events_per_batch": 50,
+    "max_event_bytes": 8192
+  },
+  "common_fields": [
+    "event_name",
+    "event_version",
+    "occurred_at",
+    "app_version",
+    "installation_id",
+    "session_id",
+    "os_name",
+    "os_major_version",
+    "architecture",
+    "language",
+    "consent_state"
+  ],
+  "required_common_fields": [
+    "event_name",
+    "event_version",
+    "occurred_at",
+    "app_version",
+    "installation_id",
+    "session_id",
+    "os_name",
+    "consent_state"
+  ],
+  "disallowed_fields": [
+    "full_path",
+    "path",
+    "folder_path",
+    "username",
+    "account_name",
+    "environment_variable",
+    "env",
+    "project_name",
+    "project_content",
+    "source_code",
+    "prompt",
+    "file_content",
+    "directory_listing",
+    "email",
+    "secret",
+    "api_key",
+    "token",
+    "credential",
+    "cookie",
+    "authorization_header",
+    "raw_command_output",
+    "raw_log",
+    "crash_dump",
+    "screenshot",
+    "clipboard"
+  ],
+  "enums": {
+    "event_name": [
+      "app_opened",
+      "startup_check_completed",
+      "language_selected",
+      "telemetry_consent_changed",
+      "scan_started",
+      "tool_check_completed",
+      "scan_completed",
+      "repair_plan_created",
+      "repair_started",
+      "repair_step_completed",
+      "repair_completed",
+      "verification_started",
+      "verification_completed",
+      "ready_reached"
+    ],
+    "consent_state": [
+      "enabled"
+    ],
+    "language": [
+      "en",
+      "zh-CN",
+      "ja"
+    ],
+    "os_name": [
+      "windows"
+    ],
+    "architecture": [
+      "x64"
+    ],
+    "tool": [
+      "system",
+      "vscode",
+      "git",
+      "node",
+      "npm",
+      "winget",
+      "network"
+    ],
+    "state": [
+      "ready",
+      "missing",
+      "unusable",
+      "unsupported",
+      "error"
+    ],
+    "overall_state": [
+      "ready",
+      "missing",
+      "unusable",
+      "unsupported",
+      "error"
+    ],
+    "method": [
+      "winget",
+      "manual"
+    ],
+    "result": [
+      "succeeded",
+      "failed",
+      "manual"
+    ],
+    "error_code": [
+      "UNSUPPORTED_WINDOWS_VERSION",
+      "UNSUPPORTED_ARCHITECTURE",
+      "CONFIG_DIR_UNWRITABLE",
+      "TEMP_DIR_UNWRITABLE",
+      "VSCODE_NOT_FOUND",
+      "GIT_NOT_FOUND",
+      "GIT_INIT_FAILED",
+      "NODE_NOT_FOUND",
+      "NPM_NOT_FOUND",
+      "TOOL_TIMEOUT",
+      "WINGET_UNAVAILABLE",
+      "NETWORK_UNAVAILABLE",
+      "USER_CANCELLED_UAC",
+      "INSTALL_FAILED",
+      "VERIFY_FAILED",
+      "LOCAL_SERVER_FAILED",
+      "BROWSER_OPEN_FAILED",
+      "VSCODE_OPEN_FAILED",
+      "UNKNOWN_ERROR"
+    ]
+  },
+  "events": [
+    {
+      "name": "app_opened",
+      "fields": [
+        "launch_result"
+      ]
+    },
+    {
+      "name": "startup_check_completed",
+      "fields": [
+        "overall_state",
+        "error_code",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "language_selected",
+      "fields": [
+        "selected_language",
+        "source"
+      ]
+    },
+    {
+      "name": "telemetry_consent_changed",
+      "fields": [
+        "new_consent_state",
+        "source"
+      ]
+    },
+    {
+      "name": "scan_started",
+      "fields": [
+        "scan_id"
+      ]
+    },
+    {
+      "name": "tool_check_completed",
+      "fields": [
+        "scan_id",
+        "tool",
+        "state",
+        "error_code",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "scan_completed",
+      "fields": [
+        "scan_id",
+        "overall_state",
+        "missing_required_count",
+        "unusable_required_count",
+        "unsupported_count",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "repair_plan_created",
+      "fields": [
+        "scan_id",
+        "repairable_count",
+        "manual_count",
+        "requires_uac_possible"
+      ]
+    },
+    {
+      "name": "repair_started",
+      "fields": [
+        "repair_id",
+        "tool",
+        "method"
+      ]
+    },
+    {
+      "name": "repair_step_completed",
+      "fields": [
+        "repair_id",
+        "tool",
+        "result",
+        "error_code",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "repair_completed",
+      "fields": [
+        "repair_id",
+        "overall_state",
+        "completed_count",
+        "failed_count",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "verification_started",
+      "fields": [
+        "verification_id"
+      ]
+    },
+    {
+      "name": "verification_completed",
+      "fields": [
+        "verification_id",
+        "overall_state",
+        "error_code",
+        "duration_ms"
+      ]
+    },
+    {
+      "name": "ready_reached",
+      "fields": [
+        "verified_tool_count",
+        "duration_from_open_ms"
+      ]
+    }
+  ]
+}
