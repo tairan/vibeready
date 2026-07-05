@@ -3,7 +3,9 @@
 #include <shlobj.h>
 #include <shellapi.h>
 
+#include "telemetry.h"
 #include "ui_foundation.h"
+#include "version.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -20,6 +22,7 @@ constexpr UINT_PTR kStartupTimerId = 1;
 constexpr UINT_PTR kScanTimerId = 2;
 constexpr UINT_PTR kRepairTimerId = 3;
 constexpr UINT_PTR kVerificationTimerId = 4;
+constexpr UINT kAsyncChecksCompletedMessage = WM_APP + 1;
 
 enum class AppRoute {
     Startup,
@@ -34,6 +37,11 @@ enum class AppRoute {
     Verifying,
     VerificationFailed,
     Ready,
+};
+
+enum class AsyncCheckKind {
+    Startup,
+    Scan,
 };
 
 enum class UiControl {
@@ -492,6 +500,18 @@ struct StartupChecks {
     SystemScanDetails systemDetails;
 };
 
+struct AsyncCheckRequest {
+    HWND hwnd = nullptr;
+    AsyncCheckKind kind = AsyncCheckKind::Startup;
+    unsigned requestId = 0;
+};
+
+struct AsyncCheckResult {
+    AsyncCheckKind kind = AsyncCheckKind::Startup;
+    unsigned requestId = 0;
+    StartupChecks checks;
+};
+
 struct Preferences {
     Locale locale = DetectSystemLocale();
     bool telemetryAllowed = false;
@@ -563,8 +583,20 @@ struct AppState {
     AppRoute manualReturnRoute = AppRoute::ScanResults;
     int scanStep = 0;
     bool scanningActive = false;
+    unsigned nextCheckRequestId = 0;
+    unsigned startupCheckRequestId = 0;
+    unsigned scanCheckRequestId = 0;
+    bool startupCheckActive = false;
+    bool scanCheckActive = false;
     RepairState repair;
     VerificationState verification;
+    std::wstring scanId;
+    std::wstring repairId;
+    std::wstring verificationId;
+    ULONGLONG appOpenedTick = 0;
+    ULONGLONG scanStartedTick = 0;
+    ULONGLONG repairStartedTick = 0;
+    ULONGLONG verificationStartedTick = 0;
     bool showTechnicalDetails = false;
     bool initialized = false;
     float dpi = 96.0f;
@@ -1403,6 +1435,67 @@ std::wstring ConfigPath() {
     return JoinPath(g_state.checks.configDir, L"config.ini");
 }
 
+std::wstring TelemetryEndpoint() {
+    std::wstring overrideEndpoint = GetEnvironmentValue(L"VIBEREADY_TELEMETRY_ENDPOINT");
+    if (!overrideEndpoint.empty()) {
+        return overrideEndpoint;
+    }
+    return VIBEREADY_COMPILED_TELEMETRY_ENDPOINT;
+}
+
+std::wstring WindowsMajorTelemetryVersion() {
+    if (g_state.checks.systemDetails.buildNumber >= 22000) {
+        return L"11";
+    }
+    if (g_state.checks.systemDetails.majorVersion > 0) {
+        return std::to_wstring(g_state.checks.systemDetails.majorVersion);
+    }
+    return L"";
+}
+
+void ConfigureTelemetry(bool initial) {
+    vibeready::telemetry::Context context;
+    context.appDataDir = g_state.checks.configDir;
+    context.endpoint = TelemetryEndpoint();
+    context.appVersion = VIBEREADY_APP_VERSION_W;
+    context.osMajorVersion = WindowsMajorTelemetryVersion();
+    context.architecture = L"x64";
+    context.language = LocaleCode(g_state.preferences.locale);
+    context.consentEnabled = g_state.preferences.telemetryKnown && g_state.preferences.telemetryAllowed;
+
+    if (initial) {
+        vibeready::telemetry::Initialize(context);
+    } else {
+        vibeready::telemetry::UpdateContext(context);
+    }
+    vibeready::telemetry::SetConsent(context.consentEnabled);
+}
+
+void TrackSavedPreferences(
+    const Preferences& source,
+    const std::wstring& sourceName,
+    bool previousTelemetryKnown,
+    bool previousTelemetryAllowed,
+    Locale previousLocale) {
+    if (!source.telemetryAllowed) {
+        return;
+    }
+
+    if (!previousTelemetryKnown || previousLocale != source.locale) {
+        vibeready::telemetry::Track(L"language_selected", {
+            vibeready::telemetry::Text(L"selected_language", LocaleCode(source.locale)),
+            vibeready::telemetry::Text(L"source", sourceName),
+        });
+    }
+
+    if (!previousTelemetryKnown || previousTelemetryAllowed != source.telemetryAllowed) {
+        vibeready::telemetry::Track(L"telemetry_consent_changed", {
+            vibeready::telemetry::Text(L"new_consent_state", L"enabled"),
+            vibeready::telemetry::Text(L"source", sourceName),
+        });
+    }
+}
+
 void LoadPreferences() {
     std::wstring path = ConfigPath();
     if (path.empty()) {
@@ -1443,6 +1536,10 @@ bool SavePreferences() {
         return false;
     }
 
+    bool previousTelemetryKnown = g_state.preferences.telemetryKnown;
+    bool previousTelemetryAllowed = g_state.preferences.telemetryAllowed;
+    Locale previousLocale = g_state.preferences.locale;
+    std::wstring sourceName = g_state.route == AppRoute::Settings ? L"settings" : L"first_run";
     Preferences source = g_state.route == AppRoute::Settings ? g_state.settingsDraft : g_state.preferences;
     std::wstring path = ConfigPath();
     BOOL languageOk = WritePrivateProfileStringW(L"preferences", L"language", LocaleCode(source.locale).c_str(), path.c_str());
@@ -1456,6 +1553,10 @@ bool SavePreferences() {
         g_state.preferences.themeKnown = true;
     }
     g_state.preferences.saved = saved;
+    if (saved) {
+        ConfigureTelemetry(false);
+        TrackSavedPreferences(source, sourceName, previousTelemetryKnown, previousTelemetryAllowed, previousLocale);
+    }
     return saved;
 }
 
@@ -1465,6 +1566,12 @@ bool ArePreferencesComplete() {
 
 std::wstring L10n(const wchar_t* en, const wchar_t* zh, const wchar_t* ja);
 std::vector<RepairPlanItem> BuildRepairPlan();
+void TrackStartupCheckCompleted();
+void TrackScanStarted();
+void TrackScanToolChecks();
+void TrackScanCompleted();
+void TrackRepairPlanCreated(const std::vector<RepairPlanItem>& plan);
+void TrackManualRepairStarted(RepairTool tool);
 void StartVerificationFlow();
 void AdvanceVerificationFlow();
 void StopVerificationServer();
@@ -1522,6 +1629,7 @@ void EnterFixPlan() {
     }
     g_state.route = AppRoute::FixPlan;
     g_state.showTechnicalDetails = false;
+    TrackRepairPlanCreated(g_state.repair.plan);
 }
 
 void EnterManualSteps(RepairTool tool, AppRoute returnRoute = AppRoute::ScanResults) {
@@ -1531,6 +1639,7 @@ void EnterManualSteps(RepairTool tool, AppRoute returnRoute = AppRoute::ScanResu
     g_state.manualReturnRoute = returnRoute;
     g_state.route = AppRoute::ManualSteps;
     g_state.showTechnicalDetails = false;
+    TrackManualRepairStarted(tool);
 }
 
 void EnterScanning() {
@@ -1542,7 +1651,12 @@ void EnterScanning() {
     g_state.route = AppRoute::Scanning;
     g_state.scanStep = 0;
     g_state.scanningActive = true;
+    g_state.scanCheckActive = false;
+    ++g_state.scanCheckRequestId;
     g_state.repair.active = false;
+    g_state.repairId.clear();
+    g_state.verificationId.clear();
+    TrackScanStarted();
 }
 
 bool CanNavigateBack() {
@@ -1601,6 +1715,8 @@ bool NavigateBack() {
             KillTimer(g_state.window, kScanTimerId);
         }
         g_state.scanningActive = false;
+        g_state.scanCheckActive = false;
+        ++g_state.scanCheckRequestId;
         g_state.scanStep = 0;
         EnterHome();
         AppendLog(L"scan_canceled_by_navigation");
@@ -1623,13 +1739,30 @@ bool NavigateBack() {
     }
 }
 
+void PopulateFastStartupChecks(StartupChecks* checks) {
+    checks->systemResult = RunSystemScan(&checks->systemDetails);
+    checks->supportedWindows = checks->systemDetails.isWindows10Or11;
+    checks->x64 = checks->systemDetails.isX64;
+    checks->administrator = checks->systemDetails.isAdministrator;
+    checks->mayRequireUacForInstall = checks->systemDetails.mayRequireUacForInstall;
+
+    wchar_t tempPath[MAX_PATH + 1] = {};
+    DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
+    checks->tempWritable = tempLength > 0 && tempLength < MAX_PATH && DirectoryWritable(tempPath);
+
+    std::wstring localAppData = GetAppDataRoot();
+    checks->configDir = JoinPath(localAppData, L"VibeReady");
+    if (!checks->configDir.empty()) {
+        CreateDirectoryW(checks->configDir.c_str(), nullptr);
+        checks->configWritable = DirectoryWritable(checks->configDir);
+        checks->logPath = JoinPath(checks->configDir, L"vibeready.log");
+        checks->logWritable = WriteTextFile(checks->logPath, L"", true);
+    }
+}
+
 StartupChecks RunStartupChecks() {
     StartupChecks checks;
-    checks.systemResult = RunSystemScan(&checks.systemDetails);
-    checks.supportedWindows = checks.systemDetails.isWindows10Or11;
-    checks.x64 = checks.systemDetails.isX64;
-    checks.administrator = checks.systemDetails.isAdministrator;
-    checks.mayRequireUacForInstall = checks.systemDetails.mayRequireUacForInstall;
+    PopulateFastStartupChecks(&checks);
     checks.vscode = RunVscodeScan();
     checks.git = RunGitScan();
     checks.node = RunVersionCommandCheck(L"node", L"node.exe", L"node.exe --version", L"NODE_NOT_FOUND");
@@ -1637,20 +1770,115 @@ StartupChecks RunStartupChecks() {
     checks.winget = RunWingetCheck();
     checks.network = RunNetworkCheck();
 
-    wchar_t tempPath[MAX_PATH + 1] = {};
-    DWORD tempLength = GetTempPathW(MAX_PATH, tempPath);
-    checks.tempWritable = tempLength > 0 && tempLength < MAX_PATH && DirectoryWritable(tempPath);
+    return checks;
+}
 
-    std::wstring localAppData = GetAppDataRoot();
-    checks.configDir = JoinPath(localAppData, L"VibeReady");
-    if (!checks.configDir.empty()) {
-        CreateDirectoryW(checks.configDir.c_str(), nullptr);
-        checks.configWritable = DirectoryWritable(checks.configDir);
-        checks.logPath = JoinPath(checks.configDir, L"vibeready.log");
-        checks.logWritable = WriteTextFile(checks.logPath, L"", true);
+StartupChecks RunInitialStartupChecks() {
+    StartupChecks checks;
+    PopulateFastStartupChecks(&checks);
+    return checks;
+}
+
+DWORD WINAPI AsyncCheckThreadProc(void* parameter) {
+    AsyncCheckRequest* request = static_cast<AsyncCheckRequest*>(parameter);
+    HWND hwnd = request->hwnd;
+    AsyncCheckKind kind = request->kind;
+    unsigned requestId = request->requestId;
+    delete request;
+
+    AsyncCheckResult* result = new AsyncCheckResult();
+    result->kind = kind;
+    result->requestId = requestId;
+    result->checks = RunStartupChecks();
+    if (!PostMessageW(hwnd, kAsyncChecksCompletedMessage, 0, reinterpret_cast<LPARAM>(result))) {
+        delete result;
+    }
+    return 0;
+}
+
+void StartAsyncChecks(AsyncCheckKind kind) {
+    if (!g_state.window) {
+        return;
     }
 
-    return checks;
+    unsigned requestId = ++g_state.nextCheckRequestId;
+    if (kind == AsyncCheckKind::Startup) {
+        g_state.startupCheckRequestId = requestId;
+        g_state.startupCheckActive = true;
+    } else {
+        g_state.scanCheckRequestId = requestId;
+        g_state.scanCheckActive = true;
+    }
+
+    AsyncCheckRequest* request = new AsyncCheckRequest();
+    request->hwnd = g_state.window;
+    request->kind = kind;
+    request->requestId = requestId;
+
+    HANDLE thread = CreateThread(nullptr, 0, AsyncCheckThreadProc, request, 0, nullptr);
+    if (!thread) {
+        delete request;
+        if (kind == AsyncCheckKind::Startup) {
+            g_state.startupCheckActive = false;
+        } else {
+            g_state.scanCheckActive = false;
+        }
+        AppendLog(L"background environment check could not start");
+        RefreshUi();
+        return;
+    }
+    CloseHandle(thread);
+}
+
+void CompleteStartupChecks(const StartupChecks& checks, unsigned requestId) {
+    if (requestId != g_state.startupCheckRequestId) {
+        return;
+    }
+
+    g_state.startupCheckActive = false;
+    g_state.checks = checks;
+    ConfigureTelemetry(false);
+    TrackStartupCheckCompleted();
+    AppendLog(L"startup checks completed");
+    RefreshUi();
+}
+
+void CompleteScanChecks(const StartupChecks& checks, unsigned requestId) {
+    if (requestId != g_state.scanCheckRequestId) {
+        return;
+    }
+
+    g_state.scanCheckActive = false;
+    if (g_state.route != AppRoute::Scanning) {
+        return;
+    }
+
+    if (g_state.window) {
+        KillTimer(g_state.window, kScanTimerId);
+    }
+    g_state.checks = checks;
+    g_state.scanningActive = false;
+    g_state.scanStep = 6;
+    ConfigureTelemetry(false);
+    TrackScanToolChecks();
+    TrackScanCompleted();
+    AppendLog(L"read-only environment scan completed");
+    EnterScanResults();
+    RefreshUi();
+    AppendLog(L"scan flow finished");
+}
+
+void HandleAsyncChecksCompleted(AsyncCheckResult* result) {
+    if (!result) {
+        return;
+    }
+
+    if (result->kind == AsyncCheckKind::Startup) {
+        CompleteStartupChecks(result->checks, result->requestId);
+    } else {
+        CompleteScanChecks(result->checks, result->requestId);
+    }
+    delete result;
 }
 
 void FocusExistingInstance() {
@@ -2113,6 +2341,20 @@ std::wstring ValueFor(bool ok) {
     return ok ? copy.supported : copy.unsupported;
 }
 
+std::wstring ReadinessValue(bool ok, bool pending) {
+    if (pending) {
+        return L10n(L"Checking", L"检查中", L"確認中");
+    }
+    return ValueFor(ok);
+}
+
+vibeready::ui::StatusTone ReadinessTone(bool ok, bool pending) {
+    if (pending) {
+        return vibeready::ui::StatusTone::Accent;
+    }
+    return ToneFor(ok);
+}
+
 std::wstring StateName(ToolState state) {
     switch (state) {
     case ToolState::Ready:
@@ -2127,6 +2369,301 @@ std::wstring StateName(ToolState state) {
     default:
         return L"error";
     }
+}
+
+long long ElapsedMs(ULONGLONG startTick) {
+    if (startTick == 0) {
+        return 0;
+    }
+    ULONGLONG now = GetTickCount64();
+    return static_cast<long long>(now >= startTick ? now - startTick : 0);
+}
+
+std::wstring FirstTelemetryErrorCode() {
+    if (!g_state.checks.supportedWindows) {
+        return L"UNSUPPORTED_WINDOWS_VERSION";
+    }
+    if (!g_state.checks.x64) {
+        return L"UNSUPPORTED_ARCHITECTURE";
+    }
+    if (!g_state.checks.tempWritable) {
+        return L"TEMP_DIR_UNWRITABLE";
+    }
+    if (!g_state.checks.configWritable) {
+        return L"CONFIG_DIR_UNWRITABLE";
+    }
+    if (g_state.checks.vscode.state != ToolState::Ready) {
+        return g_state.checks.vscode.errorCode.empty() ? L"UNKNOWN_ERROR" : g_state.checks.vscode.errorCode;
+    }
+    if (g_state.checks.git.state != ToolState::Ready) {
+        return g_state.checks.git.errorCode.empty() ? L"UNKNOWN_ERROR" : g_state.checks.git.errorCode;
+    }
+    if (g_state.checks.node.state != ToolState::Ready) {
+        return g_state.checks.node.errorCode.empty() ? L"UNKNOWN_ERROR" : g_state.checks.node.errorCode;
+    }
+    if (g_state.checks.npm.state != ToolState::Ready) {
+        return g_state.checks.npm.errorCode.empty() ? L"UNKNOWN_ERROR" : g_state.checks.npm.errorCode;
+    }
+    return L"";
+}
+
+std::wstring OverallTelemetryState() {
+    if (!g_state.checks.supportedWindows || !g_state.checks.x64 ||
+        g_state.checks.systemResult.state == ToolState::Unsupported) {
+        return L"unsupported";
+    }
+
+    const ToolState requiredStates[] = {
+        g_state.checks.vscode.state,
+        g_state.checks.git.state,
+        g_state.checks.node.state,
+        g_state.checks.npm.state,
+    };
+    for (ToolState state : requiredStates) {
+        if (state == ToolState::Missing) {
+            return L"missing";
+        }
+    }
+    for (ToolState state : requiredStates) {
+        if (state == ToolState::Unusable) {
+            return L"unusable";
+        }
+    }
+    if (!g_state.checks.tempWritable || !g_state.checks.configWritable) {
+        return L"error";
+    }
+    for (ToolState state : requiredStates) {
+        if (state != ToolState::Ready) {
+            return L"error";
+        }
+    }
+    return L"ready";
+}
+
+int CountRequiredState(ToolState target) {
+    int count = 0;
+    const ToolState states[] = {
+        g_state.checks.vscode.state,
+        g_state.checks.git.state,
+        g_state.checks.node.state,
+        g_state.checks.npm.state,
+    };
+    for (ToolState state : states) {
+        if (state == target) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int VerifiedToolCount() {
+    int count = 0;
+    if (g_state.checks.vscode.state == ToolState::Ready) {
+        ++count;
+    }
+    if (g_state.checks.git.state == ToolState::Ready) {
+        ++count;
+    }
+    if (g_state.checks.node.state == ToolState::Ready) {
+        ++count;
+    }
+    if (g_state.checks.npm.state == ToolState::Ready) {
+        ++count;
+    }
+    return count;
+}
+
+std::wstring RepairToolTelemetryId(RepairTool tool) {
+    switch (tool) {
+    case RepairTool::Vscode:
+        return L"vscode";
+    case RepairTool::Git:
+        return L"git";
+    case RepairTool::NodeJs:
+    default:
+        return L"node";
+    }
+}
+
+std::vector<vibeready::telemetry::Field> TelemetryFieldsWithError(
+    std::vector<vibeready::telemetry::Field> fields,
+    const std::wstring& errorCode) {
+    if (!errorCode.empty()) {
+        fields.push_back(vibeready::telemetry::Text(L"error_code", errorCode));
+    }
+    return fields;
+}
+
+void TrackStartupCheckCompleted() {
+    vibeready::telemetry::Track(L"app_opened", {
+        vibeready::telemetry::Text(L"launch_result", L"started"),
+    });
+    vibeready::telemetry::Track(L"startup_check_completed", TelemetryFieldsWithError({
+        vibeready::telemetry::Text(L"overall_state", OverallTelemetryState()),
+        vibeready::telemetry::Number(L"duration_ms", ElapsedMs(g_state.appOpenedTick)),
+    }, FirstTelemetryErrorCode()));
+}
+
+void TrackScanStarted() {
+    g_state.scanId = vibeready::telemetry::NewId();
+    g_state.scanStartedTick = GetTickCount64();
+    if (g_state.scanId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"scan_started", {
+        vibeready::telemetry::Text(L"scan_id", g_state.scanId),
+    });
+}
+
+void TrackToolCheck(const std::wstring& tool, ToolState state, const std::wstring& errorCode) {
+    if (g_state.scanId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"tool_check_completed", TelemetryFieldsWithError({
+        vibeready::telemetry::Text(L"scan_id", g_state.scanId),
+        vibeready::telemetry::Text(L"tool", tool),
+        vibeready::telemetry::Text(L"state", StateName(state)),
+        vibeready::telemetry::Number(L"duration_ms", 0),
+    }, errorCode));
+}
+
+void TrackScanToolChecks() {
+    TrackToolCheck(L"system", g_state.checks.systemResult.state, g_state.checks.systemResult.errorCode);
+    TrackToolCheck(L"vscode", g_state.checks.vscode.state, g_state.checks.vscode.errorCode);
+    TrackToolCheck(L"git", g_state.checks.git.state, g_state.checks.git.errorCode);
+    TrackToolCheck(L"node", g_state.checks.node.state, g_state.checks.node.errorCode);
+    TrackToolCheck(L"npm", g_state.checks.npm.state, g_state.checks.npm.errorCode);
+    TrackToolCheck(L"winget", g_state.checks.winget.state, g_state.checks.winget.errorCode);
+    TrackToolCheck(L"network", g_state.checks.network.state, g_state.checks.network.errorCode);
+}
+
+void TrackScanCompleted() {
+    if (g_state.scanId.empty()) {
+        return;
+    }
+    int unsupportedCount = g_state.checks.systemResult.state == ToolState::Unsupported ? 1 : 0;
+    vibeready::telemetry::Track(L"scan_completed", {
+        vibeready::telemetry::Text(L"scan_id", g_state.scanId),
+        vibeready::telemetry::Text(L"overall_state", OverallTelemetryState()),
+        vibeready::telemetry::Number(L"missing_required_count", CountRequiredState(ToolState::Missing)),
+        vibeready::telemetry::Number(L"unusable_required_count", CountRequiredState(ToolState::Unusable)),
+        vibeready::telemetry::Number(L"unsupported_count", unsupportedCount),
+        vibeready::telemetry::Number(L"duration_ms", ElapsedMs(g_state.scanStartedTick)),
+    });
+}
+
+void TrackRepairPlanCreated(const std::vector<RepairPlanItem>& plan) {
+    if (g_state.scanId.empty()) {
+        return;
+    }
+    int repairableCount = 0;
+    int manualCount = 0;
+    bool requiresUacPossible = false;
+    for (const RepairPlanItem& item : plan) {
+        if (item.manualOnly) {
+            ++manualCount;
+        } else {
+            ++repairableCount;
+        }
+        requiresUacPossible = requiresUacPossible || item.mayRequireUac;
+    }
+    vibeready::telemetry::Track(L"repair_plan_created", {
+        vibeready::telemetry::Text(L"scan_id", g_state.scanId),
+        vibeready::telemetry::Number(L"repairable_count", repairableCount),
+        vibeready::telemetry::Number(L"manual_count", manualCount),
+        vibeready::telemetry::Boolean(L"requires_uac_possible", requiresUacPossible),
+    });
+}
+
+void EnsureRepairId() {
+    if (g_state.repairId.empty()) {
+        g_state.repairId = vibeready::telemetry::NewId();
+    }
+}
+
+void TrackRepairStarted(RepairTool tool, const std::wstring& method) {
+    EnsureRepairId();
+    if (g_state.repairId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"repair_started", {
+        vibeready::telemetry::Text(L"repair_id", g_state.repairId),
+        vibeready::telemetry::Text(L"tool", RepairToolTelemetryId(tool)),
+        vibeready::telemetry::Text(L"method", method),
+    });
+}
+
+void TrackManualRepairStarted(RepairTool tool) {
+    TrackRepairStarted(tool, L"manual");
+}
+
+void TrackRepairStepCompleted(
+    RepairTool tool,
+    const std::wstring& result,
+    const std::wstring& errorCode,
+    ULONGLONG startedTick) {
+    EnsureRepairId();
+    if (g_state.repairId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"repair_step_completed", TelemetryFieldsWithError({
+        vibeready::telemetry::Text(L"repair_id", g_state.repairId),
+        vibeready::telemetry::Text(L"tool", RepairToolTelemetryId(tool)),
+        vibeready::telemetry::Text(L"result", result),
+        vibeready::telemetry::Number(L"duration_ms", ElapsedMs(startedTick)),
+    }, errorCode));
+}
+
+void TrackRepairCompleted(const std::wstring& overallState) {
+    EnsureRepairId();
+    if (g_state.repairId.empty()) {
+        return;
+    }
+    int completedCount = 0;
+    int failedCount = 0;
+    for (const RepairPlanItem& item : g_state.repair.plan) {
+        if (item.stepState == RepairStepState::Succeeded) {
+            ++completedCount;
+        } else if (item.stepState == RepairStepState::Failed) {
+            ++failedCount;
+        }
+    }
+    vibeready::telemetry::Track(L"repair_completed", {
+        vibeready::telemetry::Text(L"repair_id", g_state.repairId),
+        vibeready::telemetry::Text(L"overall_state", overallState),
+        vibeready::telemetry::Number(L"completed_count", completedCount),
+        vibeready::telemetry::Number(L"failed_count", failedCount),
+        vibeready::telemetry::Number(L"duration_ms", ElapsedMs(g_state.repairStartedTick)),
+    });
+}
+
+void TrackVerificationStarted() {
+    g_state.verificationId = vibeready::telemetry::NewId();
+    g_state.verificationStartedTick = GetTickCount64();
+    if (g_state.verificationId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"verification_started", {
+        vibeready::telemetry::Text(L"verification_id", g_state.verificationId),
+    });
+}
+
+void TrackVerificationCompleted(const std::wstring& overallState, const std::wstring& errorCode) {
+    if (g_state.verificationId.empty()) {
+        return;
+    }
+    vibeready::telemetry::Track(L"verification_completed", TelemetryFieldsWithError({
+        vibeready::telemetry::Text(L"verification_id", g_state.verificationId),
+        vibeready::telemetry::Text(L"overall_state", overallState),
+        vibeready::telemetry::Number(L"duration_ms", ElapsedMs(g_state.verificationStartedTick)),
+    }, errorCode));
+}
+
+void TrackReadyReached() {
+    vibeready::telemetry::Track(L"ready_reached", {
+        vibeready::telemetry::Number(L"verified_tool_count", VerifiedToolCount()),
+        vibeready::telemetry::Number(L"duration_from_open_ms", ElapsedMs(g_state.appOpenedTick)),
+    });
 }
 
 std::wstring ReasonForState(ToolState state) {
@@ -2547,18 +3084,19 @@ void DrawReadinessRows(const D2D1_RECT_F& rect) {
     const struct {
         const wchar_t* label;
         bool ok;
+        bool pending;
     } rows[] = {
-        {L"Windows 10/11", g_state.checks.supportedWindows},
-        {L"x64", g_state.checks.x64},
-        {L"VS Code", g_state.checks.vscode.state == ToolState::Ready},
-        {L"Git", g_state.checks.git.state == ToolState::Ready},
-        {L"Node.js", g_state.checks.node.state == ToolState::Ready},
-        {L"npm", g_state.checks.npm.state == ToolState::Ready},
+        {L"Windows 10/11", g_state.checks.supportedWindows, false},
+        {L"x64", g_state.checks.x64, false},
+        {L"VS Code", g_state.checks.vscode.state == ToolState::Ready, g_state.startupCheckActive},
+        {L"Git", g_state.checks.git.state == ToolState::Ready, g_state.startupCheckActive},
+        {L"Node.js", g_state.checks.node.state == ToolState::Ready, g_state.startupCheckActive},
+        {L"npm", g_state.checks.npm.state == ToolState::Ready, g_state.startupCheckActive},
     };
 
     for (const auto& row : rows) {
         D2D1_RECT_F rowRect = D2D1::RectF(rect.left + 18.0f, y, rect.right - 18.0f, y + rowHeight);
-        ui.DrawStatusRow(vibeready::ui::StatusRowSpec{rowRect, row.label, ValueFor(row.ok), ToneFor(row.ok)});
+        ui.DrawStatusRow(vibeready::ui::StatusRowSpec{rowRect, row.label, ReadinessValue(row.ok, row.pending), ReadinessTone(row.ok, row.pending)});
         y += rowHeight;
     }
 }
@@ -3324,6 +3862,7 @@ void FailVerification(const std::wstring& errorCode, const std::wstring& message
     g_state.verification.lastMessage = message;
     g_state.route = AppRoute::VerificationFailed;
     AppendLog(L"verification_completed overall_state=error error_code=" + g_state.verification.errorCode);
+    TrackVerificationCompleted(L"error", g_state.verification.errorCode);
     RefreshUi();
 }
 
@@ -3343,6 +3882,8 @@ void CompleteVerification() {
     g_state.route = AppRoute::Ready;
     AppendLog(L"verification_completed overall_state=ready");
     AppendLog(L"ready_reached verified_tool_count=4");
+    TrackVerificationCompleted(L"ready", L"");
+    TrackReadyReached();
     RefreshUi();
 }
 
@@ -3455,11 +3996,12 @@ void StartVerificationFlow() {
     g_state.route = AppRoute::Verifying;
     g_state.showTechnicalDetails = false;
     AppendLog(L"verification_started");
+    TrackVerificationStarted();
     SetTimer(g_state.window, kVerificationTimerId, 250, nullptr);
     RefreshUi();
 }
 
-void FailRepairItem(RepairPlanItem* item, const std::wstring& errorCode, DWORD exitCode = 0) {
+void FailRepairItem(RepairPlanItem* item, const std::wstring& errorCode, DWORD exitCode = 0, ULONGLONG startedTick = 0) {
     item->stepState = RepairStepState::Failed;
     item->resultErrorCode = errorCode;
     item->exitCode = exitCode;
@@ -3472,6 +4014,8 @@ void FailRepairItem(RepairPlanItem* item, const std::wstring& errorCode, DWORD e
         L"自动修复失败。请使用手动步骤，或在环境变化后重试。",
         L"自動修復に失敗しました。手動手順を使うか、環境変更後に再試行してください。");
     AppendLog(L"repair failed for " + item->name + L" error=" + errorCode + L" exit=" + std::to_wstring(exitCode));
+    TrackRepairStepCompleted(item->tool, L"failed", errorCode, startedTick);
+    TrackRepairCompleted(L"error");
 }
 
 void RunRepairStep(RepairPlanItem* item) {
@@ -3480,17 +4024,19 @@ void RunRepairStep(RepairPlanItem* item) {
         return;
     }
 
+    ULONGLONG stepStartedTick = GetTickCount64();
     item->stepState = RepairStepState::Running;
     g_state.repair.lastMessage = L10n(L"Installing ", L"正在安装 ", L"インストール中 ") + item->name + L"...";
     RefreshUi();
     UpdateWindow(g_state.window);
+    TrackRepairStarted(item->tool, L"winget");
 
     if (g_state.checks.winget.state != ToolState::Ready) {
-        FailRepairItem(item, L"WINGET_UNAVAILABLE");
+        FailRepairItem(item, L"WINGET_UNAVAILABLE", 0, stepStartedTick);
         return;
     }
     if (g_state.checks.network.state != ToolState::Ready) {
-        FailRepairItem(item, L"NETWORK_UNAVAILABLE");
+        FailRepairItem(item, L"NETWORK_UNAVAILABLE", 0, stepStartedTick);
         return;
     }
 
@@ -3498,17 +4044,17 @@ void RunRepairStep(RepairPlanItem* item) {
     DWORD exitCode = 1;
     ProcessRunStatus status = RunWingetInstall(item->packageId, &exitCode);
     if (status == ProcessRunStatus::TimedOut) {
-        FailRepairItem(item, L"TOOL_TIMEOUT", exitCode);
+        FailRepairItem(item, L"TOOL_TIMEOUT", exitCode, stepStartedTick);
         return;
     }
     if (status != ProcessRunStatus::Started || exitCode != 0) {
-        FailRepairItem(item, InstallErrorFromExitCode(exitCode), exitCode);
+        FailRepairItem(item, InstallErrorFromExitCode(exitCode), exitCode, stepStartedTick);
         return;
     }
 
     std::wstring verifyError;
     if (!RefreshScanForRepairTool(item->tool, &verifyError)) {
-        FailRepairItem(item, verifyError.empty() ? L"VERIFY_FAILED" : verifyError, exitCode);
+        FailRepairItem(item, verifyError.empty() ? L"VERIFY_FAILED" : verifyError, exitCode, stepStartedTick);
         return;
     }
 
@@ -3517,6 +4063,7 @@ void RunRepairStep(RepairPlanItem* item) {
     item->exitCode = exitCode;
     g_state.repair.lastMessage = item->name + L10n(L" is installed and verified.", L" 已安装并通过验证。", L" はインストールされ、確認済みです。");
     AppendLog(L"repair succeeded for " + item->name);
+    TrackRepairStepCompleted(item->tool, L"succeeded", L"", stepStartedTick);
 }
 
 void FinishRepairFlowIfNeeded() {
@@ -3531,6 +4078,7 @@ void FinishRepairFlowIfNeeded() {
         L"自動修復が完了しました。環境全体を確認するため再スキャンしてください。");
     KillTimer(g_state.window, kRepairTimerId);
     AppendLog(L"repair flow completed");
+    TrackRepairCompleted(L"ready");
 }
 
 void AdvanceRepairFlow() {
@@ -3557,6 +4105,8 @@ void StartRepairFlow() {
         RefreshUi();
         return;
     }
+    g_state.repairId = vibeready::telemetry::NewId();
+    g_state.repairStartedTick = GetTickCount64();
     if (!HasAutoRepairItems()) {
         EnterManualSteps(FirstManualRepairTool());
         RefreshUi();
@@ -3748,6 +4298,7 @@ void ActivateControl(UiControl control) {
         } else if (g_state.route == AppRoute::Home) {
             EnterScanning();
             SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            StartAsyncChecks(AsyncCheckKind::Scan);
             AppendLog(L"primary environment check started");
             RefreshUi();
         } else if (g_state.route == AppRoute::ScanResults) {
@@ -3791,6 +4342,7 @@ void ActivateControl(UiControl control) {
         if (g_state.route == AppRoute::Ready) {
             EnterScanning();
             SetTimer(g_state.window, kScanTimerId, 500, nullptr);
+            StartAsyncChecks(AsyncCheckKind::Scan);
             AppendLog(L"ready page rescan started");
             RefreshUi();
         } else {
@@ -3807,6 +4359,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     switch (message) {
     case WM_CREATE:
         g_state.window = hwnd;
+        g_state.appOpenedTick = GetTickCount64();
         g_state.dpi = static_cast<float>(GetDpiForWindow(hwnd));
         if (FAILED(g_state.ui.Initialize(hwnd))) {
             MessageBoxW(hwnd, L"VibeReady could not initialize Direct2D.", kWindowTitle, MB_ICONERROR | MB_OK);
@@ -3817,18 +4370,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
         SetTimer(hwnd, kStartupTimerId, 50, nullptr);
         return 0;
 
+    case kAsyncChecksCompletedMessage:
+        HandleAsyncChecksCompleted(reinterpret_cast<AsyncCheckResult*>(lparam));
+        return 0;
+
     case WM_TIMER:
         if (wparam == kStartupTimerId) {
             KillTimer(hwnd, kStartupTimerId);
-            g_state.checks = RunStartupChecks();
+            g_state.checks = RunInitialStartupChecks();
             LoadPreferences();
-            AppendLog(L"startup checks completed");
+            ConfigureTelemetry(true);
             if (!ArePreferencesComplete()) {
                 EnterLanguageTelemetry();
             } else {
                 EnterHome();
             }
             g_state.initialized = true;
+            StartAsyncChecks(AsyncCheckKind::Startup);
             RefreshUi();
             if (!g_state.checks.supportedWindows || !g_state.checks.x64) {
                 const Copy& copy = CurrentCopy();
@@ -3841,18 +4399,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
             if (g_state.route != AppRoute::Scanning) {
                 return 0;
             }
-            if (g_state.scanStep >= 5) {
+            if (g_state.scanStep < 5) {
+                ++g_state.scanStep;
+                RefreshUi();
+            } else if (!g_state.scanCheckActive) {
                 KillTimer(hwnd, kScanTimerId);
                 g_state.scanningActive = false;
                 g_state.scanStep = 6;
-                AppendLog(L"read-only environment scan started");
-                g_state.checks = RunStartupChecks();
-                AppendLog(L"read-only environment scan completed");
                 EnterScanResults();
-                RefreshUi();
-                AppendLog(L"scan flow finished");
-            } else {
-                ++g_state.scanStep;
                 RefreshUi();
             }
         }
@@ -4003,6 +4557,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
     }
 
     case WM_DESTROY:
+        ++g_state.startupCheckRequestId;
+        ++g_state.scanCheckRequestId;
+        g_state.startupCheckActive = false;
+        g_state.scanCheckActive = false;
         StopVerificationServer();
         AppendLog(L"shutdown");
         g_state.ui.DiscardDeviceResources();

@@ -38,21 +38,24 @@ try {
     }
 
     if (-not $SkipSmoke) {
-        $smoke = & (Join-Path $PSScriptRoot "test-smoke.ps1") -ExePath $exePath -AppDataDir $appDataDir -VerifyUiControls -VerifyNavigation
+        $smoke = & (Join-Path $PSScriptRoot "test-smoke.ps1") -ExePath $exePath -AppDataDir $appDataDir -VerifyUiControls -VerifyResponsiveness -VerifyNavigation
         $result.Smoke = $smoke
     }
 
     [pscustomobject]$result
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
-        for ($attempt = 1; $attempt -le 5; $attempt++) {
+        Get-Process -Name "VibeReady" -ErrorAction SilentlyContinue | Stop-Process -Force
+        for ($attempt = 1; $attempt -le 20; $attempt++) {
             try {
                 Remove-Item -LiteralPath $testRoot -Recurse -Force
                 break
             } catch {
-                if ($attempt -eq 5) {
+                if ($attempt -eq 20) {
                     throw
                 }
+                [System.GC]::Collect()
+                [System.GC]::WaitForPendingFinalizers()
                 Start-Sleep -Milliseconds 500
             }
         }

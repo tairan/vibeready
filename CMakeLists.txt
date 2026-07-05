@@ -13,6 +13,12 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(VIBEREADY_VERSION_TWEAK 0)
+set(VIBEREADY_TELEMETRY_ENDPOINT "" CACHE STRING "Production telemetry batch endpoint URL.")
+
+set(VIBEREADY_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+configure_file(src/windows/version.h.in "${VIBEREADY_GENERATED_DIR}/version.h" @ONLY)
+configure_file(src/windows/VibeReady.rc.in "${VIBEREADY_GENERATED_DIR}/VibeReady.rc" @ONLY)
 
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -20,13 +26,20 @@ endif()
 
 add_executable(VibeReady WIN32
   src/windows/main.cpp
+  src/windows/telemetry.cpp
   src/windows/ui_foundation.cpp
+  "${VIBEREADY_GENERATED_DIR}/VibeReady.rc"
 )
 
 target_link_libraries(VibeReady PRIVATE
   d2d1
   dwrite
+  ole32
   winhttp
+)
+
+target_include_directories(VibeReady PRIVATE
+  "${VIBEREADY_GENERATED_DIR}"
 )
 
 target_compile_definitions(VibeReady PRIVATE

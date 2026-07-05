@@ -1,0 +1,45 @@
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  event_name TEXT NOT NULL,
+  event_version INTEGER NOT NULL,
+  occurred_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  app_version TEXT NOT NULL,
+  installation_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  os_name TEXT NOT NULL,
+  os_major_version TEXT,
+  architecture TEXT,
+  language TEXT,
+  consent_state TEXT NOT NULL,
+  scan_id TEXT,
+  repair_id TEXT,
+  verification_id TEXT,
+  tool TEXT,
+  state TEXT,
+  error_code TEXT,
+  overall_state TEXT,
+  duration_ms INTEGER,
+  missing_required_count INTEGER,
+  unusable_required_count INTEGER,
+  unsupported_count INTEGER,
+  repairable_count INTEGER,
+  manual_count INTEGER,
+  requires_uac_possible INTEGER,
+  method TEXT,
+  result TEXT,
+  completed_count INTEGER,
+  failed_count INTEGER,
+  verified_tool_count INTEGER,
+  duration_from_open_ms INTEGER,
+  launch_result TEXT,
+  selected_language TEXT,
+  source TEXT,
+  new_consent_state TEXT,
+  payload_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_event_time ON events (event_name, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_events_version_event_time ON events (app_version, event_name, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_events_error_time ON events (error_code, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_events_installation_session_time ON events (installation_id, session_id, occurred_at);

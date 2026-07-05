@@ -1,5 +1,13 @@
 param(
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$TelemetryEndpoint = $env:VIBEREADY_TELEMETRY_ENDPOINT,
+    [switch]$Sign,
+    [switch]$RequireSignature,
+    [string]$TimestampUrl = "http://timestamp.digicert.com",
+    [string]$SignToolPath = $env:VIBEREADY_SIGNTOOL_PATH,
+    [string]$CertificatePath = $env:VIBEREADY_SIGN_CERT_PATH,
+    [string]$CertificatePassword = $env:VIBEREADY_SIGN_CERT_PASSWORD,
+    [string]$CertificateThumbprint = $env:VIBEREADY_SIGN_CERT_THUMBPRINT
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +16,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $repoRoot "build\windows-x64"
 $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
 $zipPath = Join-Path $repoRoot "dist\VibeReady-Windows-x64.zip"
+$manifestPath = Join-Path $repoRoot "dist\release-manifest.json"
 
 function Import-CmdEnvironment {
     param([string]$BatchFile)
@@ -96,6 +105,124 @@ function Invoke-Native {
     }
 }
 
+function Find-SignTool {
+    if ($SignToolPath -and (Test-Path -LiteralPath $SignToolPath)) {
+        return (Resolve-Path -LiteralPath $SignToolPath).Path
+    }
+
+    $roots = @(
+        "${env:ProgramFiles(x86)}\Windows Kits\10\bin",
+        "${env:ProgramFiles}\Windows Kits\10\bin"
+    )
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+        $candidate = Get-ChildItem -Path $root -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object -Property FullName -Descending |
+            Select-Object -First 1
+        if ($candidate) {
+            return $candidate.FullName
+        }
+    }
+
+    return $null
+}
+
+function Invoke-CodeSigning {
+    param([string]$Path)
+
+    if (-not $Sign -and -not $RequireSignature) {
+        return "not_requested"
+    }
+
+    $signtool = Find-SignTool
+    if (-not $signtool) {
+        if ($RequireSignature) {
+            throw "Signing is required, but signtool.exe was not found. Set VIBEREADY_SIGNTOOL_PATH or install Windows SDK."
+        }
+        Write-Warning "Signing requested, but signtool.exe was not found. Build will remain unsigned."
+        return "signtool_missing"
+    }
+
+    $signArgs = @("sign", "/fd", "SHA256", "/tr", $TimestampUrl, "/td", "SHA256")
+    if ($CertificateThumbprint) {
+        $signArgs += @("/sha1", $CertificateThumbprint)
+    } elseif ($CertificatePath) {
+        if (-not (Test-Path -LiteralPath $CertificatePath)) {
+            throw "Signing certificate file not found: $CertificatePath"
+        }
+        $signArgs += @("/f", $CertificatePath)
+        if ($CertificatePassword) {
+            $signArgs += @("/p", $CertificatePassword)
+        }
+    } else {
+        if ($RequireSignature) {
+            throw "Signing is required, but no certificate was configured. Set VIBEREADY_SIGN_CERT_THUMBPRINT or VIBEREADY_SIGN_CERT_PATH."
+        }
+        Write-Warning "Signing requested, but no certificate was configured. Build will remain unsigned."
+        return "certificate_not_configured"
+    }
+
+    Invoke-Native $signtool ($signArgs + @($Path))
+    return "signed"
+}
+
+function Get-ProjectVersion {
+    $cmakePath = Join-Path $repoRoot "CMakeLists.txt"
+    $cmake = Get-Content -Raw -Encoding UTF8 -LiteralPath $cmakePath
+    $match = [regex]::Match($cmake, 'project\(\s*VibeReady\s+VERSION\s+([0-9]+(?:\.[0-9]+){1,3})')
+    if (-not $match.Success) {
+        throw "Could not read project version from CMakeLists.txt."
+    }
+    return $match.Groups[1].Value
+}
+
+function Get-GitCommit {
+    $git = Get-Command "git" -ErrorAction SilentlyContinue
+    if (-not $git) {
+        return $null
+    }
+    $commit = & git -C $repoRoot rev-parse --short HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    return $commit
+}
+
+function Write-ReleaseManifest {
+    param(
+        [string]$PackagedExePath,
+        [string]$SigningAction
+    )
+
+    $signature = Get-AuthenticodeSignature -FilePath $PackagedExePath
+    $zipHash = Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath
+    $exeHash = Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedExePath
+    $version = Get-ProjectVersion
+    $manifest = [ordered]@{
+        app_version = $version
+        exe_product_version_expected = $version
+        platform = "windows-x64"
+        package_name = "VibeReady-Windows-x64.zip"
+        package_path = $zipPath
+        package_sha256 = $zipHash.Hash
+        exe_sha256 = $exeHash.Hash
+        git_commit = Get-GitCommit
+        telemetry_endpoint_configured = -not [string]::IsNullOrWhiteSpace($TelemetryEndpoint)
+        signing_action = $SigningAction
+        signature_status = $signature.Status.ToString()
+        signed_for_external_release = $signature.Status -eq "Valid"
+        files = @(
+            "VibeReady.exe",
+            "README.txt",
+            "THIRD-PARTY-NOTICES.txt"
+        )
+    }
+    $manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 -LiteralPath $manifestPath
+}
+
 if (-not [Environment]::Is64BitOperatingSystem) {
     throw "VibeReady release builds require a Windows x64 operating system."
 }
@@ -119,7 +246,13 @@ if (Get-Command "ninja" -ErrorAction SilentlyContinue) {
     $generatorArgs = @("-G", "Ninja", "-DCMAKE_BUILD_TYPE=$Configuration")
 }
 
-Invoke-Native "cmake" (@("-S", $repoRoot, "-B", $buildDir) + $generatorArgs)
+Invoke-Native "cmake" (@(
+    "-S",
+    $repoRoot,
+    "-B",
+    $buildDir,
+    "-DVIBEREADY_TELEMETRY_ENDPOINT=$TelemetryEndpoint"
+) + $generatorArgs)
 Invoke-Native "cmake" @("--build", $buildDir, "--config", $Configuration)
 
 $exeCandidates = @(
@@ -131,6 +264,8 @@ $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First
 if (-not $exePath) {
     throw "Build completed but VibeReady.exe was not found."
 }
+
+$signingAction = Invoke-CodeSigning -Path $exePath
 
 if (Test-Path $packageRoot) {
     Remove-Item -LiteralPath $packageRoot -Recurse -Force
@@ -146,5 +281,7 @@ if (Test-Path $zipPath) {
 }
 
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
+Write-ReleaseManifest -PackagedExePath (Join-Path $packageRoot "VibeReady.exe") -SigningAction $signingAction
 
 Write-Host "Created $zipPath"
+Write-Host "Created $manifestPath"
