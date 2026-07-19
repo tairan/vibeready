@@ -5,6 +5,9 @@ Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $workerRoot = Join-Path $repoRoot "telemetry-worker"
+$developmentServicesPath = Join-Path $repoRoot "config\development-services.json"
+$developmentServicesDocPath = Join-Path $repoRoot "docs\development-services.md"
+$developmentTelemetryTestPath = Join-Path $repoRoot "scripts\Test-DevelopmentTelemetry.ps1"
 $requiredFiles = @(
     "package.json",
     "wrangler.jsonc",
@@ -17,6 +20,12 @@ foreach ($relativePath in $requiredFiles) {
     $path = Join-Path $workerRoot $relativePath
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing Worker file: $relativePath"
+    }
+}
+
+foreach ($path in @($developmentServicesPath, $developmentServicesDocPath, $developmentTelemetryTestPath)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Missing development telemetry reference: $path"
     }
 }
 
@@ -69,6 +78,25 @@ foreach ($snippet in @(
 
 if (-not $wrangler.Contains('"binding": "DB"')) {
     throw "Worker wrangler config must bind D1 as DB."
+}
+
+$developmentServices = Get-Content -Raw -Encoding UTF8 -LiteralPath $developmentServicesPath | ConvertFrom-Json
+$developmentTelemetry = $developmentServices.telemetry
+$expectedDevelopmentBaseUrl = "https://vibeready-telemetry.chieworks.workers.dev"
+if ([string]$developmentServices.environment -ne "development") {
+    throw "Development services config must identify the development environment."
+}
+if ([string]$developmentTelemetry.worker_base_url -ne $expectedDevelopmentBaseUrl) {
+    throw "Unexpected development telemetry Worker URL."
+}
+if ([string]$developmentTelemetry.health_endpoint -ne "$expectedDevelopmentBaseUrl/healthz") {
+    throw "Unexpected development telemetry health endpoint."
+}
+if ([string]$developmentTelemetry.batch_endpoint -ne "$expectedDevelopmentBaseUrl/v1/telemetry/batch") {
+    throw "Unexpected development telemetry batch endpoint."
+}
+if ([string]$developmentTelemetry.schema_version -ne "1" -or [string]$developmentTelemetry.d1_binding -ne "DB") {
+    throw "Development telemetry schema or D1 binding does not match the Worker contract."
 }
 
 Write-Output "M5 Worker validation passed."

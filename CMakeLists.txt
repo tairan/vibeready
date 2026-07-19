@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(VibeReady VERSION 0.1.0 LANGUAGES CXX)
+include(CTest)
 
 if(NOT WIN32)
   message(FATAL_ERROR "VibeReady MVP client builds only on Windows x64.")
@@ -55,6 +56,29 @@ if(MSVC)
   target_compile_options(VibeReady PRIVATE /W4 /permissive- /utf-8)
 else()
   target_compile_options(VibeReady PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(VibeReadyTelemetryTests
+    tests/windows/telemetry_contract.cpp
+    src/windows/telemetry.cpp
+  )
+  target_include_directories(VibeReadyTelemetryTests PRIVATE src/windows)
+  target_link_libraries(VibeReadyTelemetryTests PRIVATE ole32 winhttp)
+  target_compile_definitions(VibeReadyTelemetryTests PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+  )
+  if(MSVC)
+    target_compile_options(VibeReadyTelemetryTests PRIVATE /W4 /permissive- /utf-8)
+  else()
+    target_compile_options(VibeReadyTelemetryTests PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(NAME VibeReadyTelemetryContract COMMAND VibeReadyTelemetryTests)
 endif()
 
 install(TARGETS VibeReady RUNTIME DESTINATION .)

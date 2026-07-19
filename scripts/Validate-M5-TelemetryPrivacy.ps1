@@ -10,6 +10,8 @@ $casesPath = Join-Path $repoRoot "specs\telemetry-redaction-cases.json"
 $validSamplesPath = Join-Path $repoRoot "telemetry\samples\valid-events.json"
 $rejectedSamplesPath = Join-Path $repoRoot "telemetry\samples\rejected-events.json"
 $sqlDir = Join-Path $repoRoot "telemetry\sql"
+$queryScriptPath = Join-Path $repoRoot "scripts\query-telemetry-funnel.ps1"
+$queryTestPath = Join-Path $repoRoot "scripts\Test-M5-TelemetryQueries.ps1"
 
 function Read-JsonFile {
     param([string]$Path)
@@ -150,6 +152,44 @@ foreach ($file in $requiredSql) {
     $path = Join-Path $sqlDir $file
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing SQL file: $file"
+    }
+}
+
+if (-not (Test-Path -LiteralPath $queryScriptPath)) {
+    throw "Missing D1 telemetry query entrypoint: $queryScriptPath"
+}
+$queryScript = Get-Content -Raw -Encoding UTF8 -LiteralPath $queryScriptPath
+foreach ($snippet in @(
+    '[string]$DatabaseName = "DB"',
+    'node_modules\.bin\wrangler.cmd',
+    '"wrangler.jsonc"',
+    '"--config"',
+    '"--json"',
+    '"--persist-to"',
+    "PersistTo",
+    '"--remote"',
+    '"--local"'
+)) {
+    if (-not $queryScript.Contains($snippet)) {
+        throw "Telemetry query script is missing pinned Wrangler/config behavior: $snippet"
+    }
+}
+
+if (-not (Test-Path -LiteralPath $queryTestPath)) {
+    throw "Missing D1 telemetry query runtime test: $queryTestPath"
+}
+$queryTest = Get-Content -Raw -Encoding UTF8 -LiteralPath $queryTestPath
+foreach ($snippet in @(
+    "app_opened",
+    "ready_reached",
+    "VERIFY_FAILED",
+    "0001_events.sql",
+    "--persist-to",
+    "ready_reached_per_app_opened",
+    "ready_installation_conversion"
+)) {
+    if (-not $queryTest.Contains($snippet)) {
+        throw "Telemetry query runtime test is missing assertion input: $snippet"
     }
 }
 

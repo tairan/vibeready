@@ -20,6 +20,10 @@ namespace {
 constexpr size_t kMaxQueueEvents = 200;
 constexpr uintmax_t kMaxQueueBytes = 256 * 1024;
 constexpr size_t kMaxBatchEvents = 20;
+constexpr size_t kMaxEventBytes = 8 * 1024;
+constexpr DWORD kInitialRetryDelayMs = 1000;
+constexpr DWORD kMaxRetryDelayMs = 30 * 1000;
+constexpr size_t kMaxRetryAttempts = 3;
 
 struct TelemetryState {
     Context context;
@@ -106,12 +110,16 @@ std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
         return "";
     }
-    int needed = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (needed <= 1) {
+    int needed = WideCharToMultiByte(
+        CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) {
         return "";
     }
-    std::string result(static_cast<size_t>(needed - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), needed, nullptr, nullptr);
+    std::string result(static_cast<size_t>(needed), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), needed, nullptr, nullptr) != needed) {
+        return "";
+    }
     return result;
 }
 
@@ -326,10 +334,24 @@ bool IsEndpointAllowed(const std::wstring& endpoint) {
     if (endpoint.empty()) {
         return false;
     }
-    std::wstring lower = ToLower(endpoint);
-    return lower.rfind(L"https://", 0) == 0 ||
-        lower.rfind(L"http://127.0.0.1", 0) == 0 ||
-        lower.rfind(L"http://localhost", 0) == 0;
+
+    URL_COMPONENTSW components = {};
+    components.dwStructSize = sizeof(components);
+    components.dwSchemeLength = static_cast<DWORD>(-1);
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(endpoint.c_str(), 0, 0, &components) || !components.lpszHostName) {
+        return false;
+    }
+
+    if (components.nScheme == INTERNET_SCHEME_HTTPS) {
+        return true;
+    }
+    if (components.nScheme != INTERNET_SCHEME_HTTP) {
+        return false;
+    }
+
+    std::wstring host = ToLower(std::wstring(components.lpszHostName, components.dwHostNameLength));
+    return host == L"127.0.0.1" || host == L"localhost";
 }
 
 bool BuildBatchBody(const std::vector<std::string>& lines, std::string* body) {
@@ -408,42 +430,74 @@ bool PostBatch(const std::wstring& endpoint, const std::vector<std::string>& lin
 }
 
 DWORD WINAPI FlushThreadProc(void*) {
-    Context context;
-    std::vector<std::string> lines;
-    {
-        std::lock_guard<std::mutex> lock(g_state.mutex);
-        context = g_state.context;
-        if (!context.consentEnabled || !IsEndpointAllowed(context.endpoint)) {
-            g_state.flushRunning = false;
-            return 0;
-        }
-        lines = ReadQueueLinesLocked();
-        if (lines.empty()) {
-            g_state.flushRunning = false;
-            return 0;
-        }
-    }
+    try {
+        DWORD retryDelayMs = kInitialRetryDelayMs;
+        size_t retryAttempts = 0;
+        for (;;) {
+            Context context;
+            std::vector<std::string> batch;
+            {
+                std::lock_guard<std::mutex> lock(g_state.mutex);
+                context = g_state.context;
+                if (!context.consentEnabled || !IsEndpointAllowed(context.endpoint)) {
+                    break;
+                }
+                std::vector<std::string> lines = ReadQueueLinesLocked();
+                if (lines.empty()) {
+                    break;
+                }
+                batch.reserve(kMaxBatchEvents);
+                for (size_t i = 0; i < std::min(kMaxBatchEvents, lines.size()); ++i) {
+                    batch.push_back(lines[i]);
+                }
+            }
 
-    std::vector<std::string> batch;
-    batch.reserve(kMaxBatchEvents);
-    for (size_t i = 0; i < std::min(kMaxBatchEvents, lines.size()); ++i) {
-        batch.push_back(lines[i]);
-    }
+            DWORD status = 0;
+            bool posted = PostBatch(context.endpoint, batch, &status);
+            bool retryableStatus = status == 408 || status == 429;
+            if (posted && retryableStatus) {
+                if (retryAttempts >= kMaxRetryAttempts) {
+                    break;
+                }
+                ++retryAttempts;
+                Sleep(retryDelayMs);
+                retryDelayMs = std::min(kMaxRetryDelayMs, retryDelayMs * 2);
+                continue;
+            }
+            bool removeBatch = posted &&
+                ((status >= 200 && status < 300) ||
+                    (status >= 400 && status < 500 && !retryableStatus));
+            if (!removeBatch) {
+                break;
+            }
+            retryDelayMs = kInitialRetryDelayMs;
+            retryAttempts = 0;
 
-    DWORD status = 0;
-    bool posted = PostBatch(context.endpoint, batch, &status);
-    bool removeBatch = posted && ((status >= 200 && status < 300) || (status >= 400 && status < 500));
-
-    {
-        std::lock_guard<std::mutex> lock(g_state.mutex);
-        if (removeBatch) {
+            std::lock_guard<std::mutex> lock(g_state.mutex);
             std::vector<std::string> current = ReadQueueLinesLocked();
-            if (current.size() >= batch.size()) {
-                current.erase(current.begin(), current.begin() + static_cast<std::ptrdiff_t>(batch.size()));
+            size_t removableCount = 0;
+            for (size_t offset = 0; offset < batch.size(); ++offset) {
+                size_t candidateCount = batch.size() - offset;
+                if (current.size() >= candidateCount &&
+                    std::equal(batch.begin() + static_cast<std::ptrdiff_t>(offset), batch.end(), current.begin())) {
+                    removableCount = candidateCount;
+                    break;
+                }
+            }
+            if (removableCount > 0) {
+                current.erase(current.begin(), current.begin() + static_cast<std::ptrdiff_t>(removableCount));
                 WriteQueueLinesLocked(current);
             }
         }
+    } catch (...) {
+        // Telemetry must never terminate or alter the main application flow.
+    }
+
+    try {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
         g_state.flushRunning = false;
+    } catch (...) {
+        // There is no recoverable action if even the process-local mutex fails.
     }
     return 0;
 }
@@ -479,45 +533,71 @@ std::wstring NewId() {
 }
 
 void Initialize(const Context& context) {
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    g_state.context = context;
-    g_state.sessionId = NewId();
-    g_state.initialized = true;
-    if (g_state.context.consentEnabled) {
-        EnsureInstallationIdLocked();
-    } else {
-        ClearQueue();
+    try {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        g_state.context = context;
+        g_state.installationId.clear();
+        g_state.sessionId = NewId();
+        g_state.initialized = true;
+        if (g_state.context.consentEnabled) {
+            EnsureInstallationIdLocked();
+        } else {
+            ClearQueue();
+        }
+    } catch (...) {
+        // Telemetry initialization is best effort and cannot block startup.
     }
 }
 
 void UpdateContext(const Context& context) {
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    g_state.context = context;
-    if (g_state.context.consentEnabled) {
-        EnsureInstallationIdLocked();
+    try {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        bool appDataChanged = g_state.context.appDataDir != context.appDataDir;
+        g_state.context = context;
+        if (appDataChanged) {
+            g_state.installationId.clear();
+        }
+        if (g_state.context.consentEnabled) {
+            EnsureInstallationIdLocked();
+        }
+    } catch (...) {
+        // Context updates must not affect scan, repair, verification, or Ready.
     }
 }
 
 void SetConsent(bool enabled) {
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    g_state.context.consentEnabled = enabled;
-    if (enabled) {
-        EnsureInstallationIdLocked();
-    } else {
-        ClearQueue();
+    try {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        g_state.context.consentEnabled = enabled;
+        if (enabled) {
+            EnsureInstallationIdLocked();
+        } else {
+            ClearQueue();
+        }
+    } catch (...) {
+        // Consent handling fails closed because Track checks consentEnabled.
+        try {
+            std::lock_guard<std::mutex> lock(g_state.mutex);
+            g_state.context.consentEnabled = false;
+        } catch (...) {
+        }
     }
 }
 
 void ClearQueue() {
-    if (g_state.context.appDataDir.empty()) {
-        return;
+    try {
+        if (g_state.context.appDataDir.empty()) {
+            return;
+        }
+        std::error_code ignored;
+        std::filesystem::remove(QueuePath(), ignored);
+    } catch (...) {
+        // Queue cleanup is best effort.
     }
-    std::error_code ignored;
-    std::filesystem::remove(QueuePath(), ignored);
 }
 
 void Track(const std::wstring& eventName, const std::vector<Field>& fields) {
-    {
+    try {
         std::lock_guard<std::mutex> lock(g_state.mutex);
         if (!g_state.initialized || !g_state.context.consentEnabled || !EnsureInstallationIdLocked()) {
             return;
@@ -557,27 +637,47 @@ void Track(const std::wstring& eventName, const std::vector<Field>& fields) {
             line += FieldJson(field);
         }
         line += "}";
+        if (line.size() > kMaxEventBytes) {
+            return;
+        }
 
         std::filesystem::create_directories(g_state.context.appDataDir);
         std::ofstream queue(QueuePath(), std::ios::binary | std::ios::app);
+        if (!queue) {
+            return;
+        }
         queue << line << "\n";
+        if (!queue) {
+            return;
+        }
+        queue.close();
+        if (!queue) {
+            return;
+        }
         TrimQueueLocked();
+    } catch (...) {
+        // Event construction and persistence are best effort.
+        return;
     }
     FlushAsync();
 }
 
 void FlushAsync() {
-    std::lock_guard<std::mutex> lock(g_state.mutex);
-    if (g_state.flushRunning || !g_state.context.consentEnabled || !IsEndpointAllowed(g_state.context.endpoint)) {
-        return;
+    try {
+        std::lock_guard<std::mutex> lock(g_state.mutex);
+        if (g_state.flushRunning || !g_state.context.consentEnabled || !IsEndpointAllowed(g_state.context.endpoint)) {
+            return;
+        }
+        g_state.flushRunning = true;
+        HANDLE thread = CreateThread(nullptr, 0, FlushThreadProc, nullptr, 0, nullptr);
+        if (!thread) {
+            g_state.flushRunning = false;
+            return;
+        }
+        CloseHandle(thread);
+    } catch (...) {
+        // Network dispatch cannot affect the caller.
     }
-    g_state.flushRunning = true;
-    HANDLE thread = CreateThread(nullptr, 0, FlushThreadProc, nullptr, 0, nullptr);
-    if (!thread) {
-        g_state.flushRunning = false;
-        return;
-    }
-    CloseHandle(thread);
 }
 
 }  // namespace vibeready::telemetry

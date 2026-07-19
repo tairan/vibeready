@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
     [string]$TelemetryEndpoint = $env:VIBEREADY_TELEMETRY_ENDPOINT,
+    [switch]$UseDevelopmentTelemetry,
     [switch]$Sign,
     [switch]$RequireSignature,
     [string]$TimestampUrl = "http://timestamp.digicert.com",
@@ -13,10 +14,25 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$developmentServicesPath = Join-Path $repoRoot "config\development-services.json"
 $buildDir = Join-Path $repoRoot "build\windows-x64"
 $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
 $zipPath = Join-Path $repoRoot "dist\VibeReady-Windows-x64.zip"
 $manifestPath = Join-Path $repoRoot "dist\release-manifest.json"
+
+if ($UseDevelopmentTelemetry -and $PSBoundParameters.ContainsKey("TelemetryEndpoint")) {
+    throw "UseDevelopmentTelemetry and TelemetryEndpoint are mutually exclusive."
+}
+if ($UseDevelopmentTelemetry) {
+    if (-not (Test-Path -LiteralPath $developmentServicesPath)) {
+        throw "Development services config not found: $developmentServicesPath"
+    }
+    $developmentServices = Get-Content -Raw -Encoding UTF8 -LiteralPath $developmentServicesPath | ConvertFrom-Json
+    $TelemetryEndpoint = [string]$developmentServices.telemetry.batch_endpoint
+    if ([string]::IsNullOrWhiteSpace($TelemetryEndpoint)) {
+        throw "Development telemetry batch endpoint is missing from: $developmentServicesPath"
+    }
+}
 
 function Import-CmdEnvironment {
     param([string]$BatchFile)
@@ -211,6 +227,7 @@ function Write-ReleaseManifest {
         exe_sha256 = $exeHash.Hash
         git_commit = Get-GitCommit
         telemetry_endpoint_configured = -not [string]::IsNullOrWhiteSpace($TelemetryEndpoint)
+        telemetry_endpoint = $TelemetryEndpoint
         signing_action = $SigningAction
         signature_status = $signature.Status.ToString()
         signed_for_external_release = $signature.Status -eq "Valid"

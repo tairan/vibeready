@@ -26,6 +26,8 @@ foreach ($path in @($ZipPath, $manifestPath, $packagedExePath, $buildScriptPath,
 $buildScript = Get-Content -Raw -Encoding UTF8 -LiteralPath $buildScriptPath
 foreach ($snippet in @(
     "VIBEREADY_TELEMETRY_ENDPOINT",
+    "UseDevelopmentTelemetry",
+    "config\development-services.json",
     "release-manifest.json",
     "Get-AuthenticodeSignature",
     "RequireSignature",
@@ -34,6 +36,12 @@ foreach ($snippet in @(
     if (-not $buildScript.Contains($snippet)) {
         throw "M5 release validation failed. build-release.ps1 is missing snippet: $snippet"
     }
+}
+if ($buildScript.Contains('$UseDevelopmentTelemetry -and [string]::IsNullOrWhiteSpace($TelemetryEndpoint)')) {
+    throw "M5 release validation failed. Development telemetry selection must override any ambient endpoint."
+}
+if (-not $buildScript.Contains('$PSBoundParameters.ContainsKey("TelemetryEndpoint")')) {
+    throw "M5 release validation failed. Explicit and development telemetry endpoints must be mutually exclusive."
 }
 
 $versionTemplate = Get-Content -Raw -Encoding UTF8 -LiteralPath $versionTemplatePath
@@ -56,6 +64,14 @@ if (-not $manifest.app_version) {
 }
 if ($manifest.exe_product_version_expected -ne $manifest.app_version) {
     throw "Release manifest app_version and exe_product_version_expected differ."
+}
+if ($manifest.telemetry_endpoint_configured) {
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.telemetry_endpoint) -or
+        -not ([string]$manifest.telemetry_endpoint).StartsWith("https://", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Configured release telemetry endpoint must be recorded as an HTTPS URL."
+    }
+} elseif (-not [string]::IsNullOrWhiteSpace([string]$manifest.telemetry_endpoint)) {
+    throw "Release manifest records an endpoint while telemetry_endpoint_configured=false."
 }
 
 $zipHash = Get-FileHash -Algorithm SHA256 -LiteralPath $ZipPath

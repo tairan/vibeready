@@ -1,6 +1,7 @@
 param(
     [switch]$SkipBuild,
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [string]$Configuration = "Release"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,7 @@ if ($LASTEXITCODE -ne 0) {
 & (Join-Path $PSScriptRoot "Validate-M5-ClientTelemetry.ps1")
 
 if (-not $SkipBuild) {
-    & (Join-Path $PSScriptRoot "build-release.ps1")
+    & (Join-Path $PSScriptRoot "build-release.ps1") -Configuration $Configuration
 }
 
 & (Join-Path $PSScriptRoot "test-package.ps1") -SkipSmoke:$SkipSmoke
@@ -28,10 +29,11 @@ if (-not $SkipBuild) {
 
 $ctestFile = Join-Path $repoRoot "build\windows-x64\CTestTestfile.cmake"
 if (Test-Path -LiteralPath $ctestFile) {
-    ctest --test-dir (Join-Path $repoRoot "build\windows-x64") --output-on-failure
+    ctest --test-dir (Join-Path $repoRoot "build\windows-x64") -C $Configuration --output-on-failure
     if ($LASTEXITCODE -ne 0) {
         throw "CTest failed with exit code $LASTEXITCODE."
     }
+    & (Join-Path $PSScriptRoot "Test-M5-ClientTelemetryTransport.ps1") -Configuration $Configuration
 } else {
     Write-Host "CTest not configured; skipped."
 }

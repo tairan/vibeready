@@ -1,0 +1,12 @@
+{
+  "environment": "development",
+  "telemetry": {
+    "issue": "CHI-37",
+    "worker_base_url": "https://vibeready-telemetry.chieworks.workers.dev",
+    "health_endpoint": "https://vibeready-telemetry.chieworks.workers.dev/healthz",
+    "batch_endpoint": "https://vibeready-telemetry.chieworks.workers.dev/v1/telemetry/batch",
+    "schema_version": "1",
+    "d1_binding": "DB",
+    "verified_on": "2026-07-18"
+  }
+}
