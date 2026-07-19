@@ -165,6 +165,8 @@ foreach ($snippet in @(
     '"wrangler.jsonc"',
     '"--config"',
     '"--json"',
+    '"--persist-to"',
+    "PersistTo",
     '"--remote"',
     '"--local"'
 )) {
@@ -181,6 +183,8 @@ foreach ($snippet in @(
     "app_opened",
     "ready_reached",
     "VERIFY_FAILED",
+    "0001_events.sql",
+    "--persist-to",
     "ready_reached_per_app_opened",
     "ready_installation_conversion"
 )) {

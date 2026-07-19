@@ -4,6 +4,7 @@ param(
     [int]$SinceDays = 30,
     [ValidateSet("funnel", "errors", "ready")]
     [string]$Query = "funnel",
+    [string]$PersistTo,
     [switch]$Remote
 )
 
@@ -20,6 +21,9 @@ if (-not (Test-Path -LiteralPath $wranglerPath)) {
 }
 if (-not (Test-Path -LiteralPath $wranglerConfigPath)) {
     throw "Missing Wrangler configuration: $wranglerConfigPath"
+}
+if ($Remote -and -not [string]::IsNullOrWhiteSpace($PersistTo)) {
+    throw "PersistTo can only be used with local D1 queries."
 }
 
 $sqlName = switch ($Query) {
@@ -43,6 +47,9 @@ try {
         $arguments += "--remote"
     } else {
         $arguments += "--local"
+        if (-not [string]::IsNullOrWhiteSpace($PersistTo)) {
+            $arguments += @("--persist-to", $PersistTo)
+        }
     }
     $output = & $wranglerPath @arguments
     if ($LASTEXITCODE -ne 0) {

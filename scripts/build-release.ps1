@@ -20,7 +20,10 @@ $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
 $zipPath = Join-Path $repoRoot "dist\VibeReady-Windows-x64.zip"
 $manifestPath = Join-Path $repoRoot "dist\release-manifest.json"
 
-if ($UseDevelopmentTelemetry -and [string]::IsNullOrWhiteSpace($TelemetryEndpoint)) {
+if ($UseDevelopmentTelemetry -and $PSBoundParameters.ContainsKey("TelemetryEndpoint")) {
+    throw "UseDevelopmentTelemetry and TelemetryEndpoint are mutually exclusive."
+}
+if ($UseDevelopmentTelemetry) {
     if (-not (Test-Path -LiteralPath $developmentServicesPath)) {
         throw "Development services config not found: $developmentServicesPath"
     }

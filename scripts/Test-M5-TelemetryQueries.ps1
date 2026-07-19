@@ -7,10 +7,14 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $workerRoot = Join-Path $repoRoot "telemetry-worker"
 $wranglerPath = Join-Path $workerRoot "node_modules\.bin\wrangler.cmd"
 $wranglerConfigPath = Join-Path $workerRoot "wrangler.jsonc"
+$migrationPath = Join-Path $workerRoot "migrations\0001_events.sql"
 $queryScriptPath = Join-Path $PSScriptRoot "query-telemetry-funnel.ps1"
 
 if (-not (Test-Path -LiteralPath $wranglerPath)) {
     throw "Wrangler is not installed. Run: npm ci --prefix `"$workerRoot`""
+}
+if (-not (Test-Path -LiteralPath $migrationPath)) {
+    throw "Telemetry D1 migration not found: $migrationPath"
 }
 
 $suffix = [guid]::NewGuid().ToString("N").Substring(0, 12)
@@ -28,8 +32,24 @@ $eventNames = @(
     "ready_reached"
 )
 $tempSql = Join-Path ([System.IO.Path]::GetTempPath()) ("VibeReadyTelemetryQuery-" + $suffix + ".sql")
+$persistPath = Join-Path ([System.IO.Path]::GetTempPath()) ("VibeReadyTelemetryD1-" + $suffix)
 
 try {
+    New-Item -ItemType Directory -Path $persistPath -Force | Out-Null
+    $migrationOutput = & $wranglerPath d1 execute DB `
+        --local `
+        --file $migrationPath `
+        --persist-to $persistPath `
+        --config $wranglerConfigPath `
+        --json
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to initialize the isolated local D1 telemetry database."
+    }
+    $migrationResult = ($migrationOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    if (@($migrationResult | Where-Object { -not $_.success }).Count -gt 0) {
+        throw "Local D1 telemetry migration did not report success."
+    }
+
     $statements = foreach ($eventName in $eventNames) {
         $id = [guid]::NewGuid().ToString()
         $errorCode = if ($eventName -eq "scan_completed") { "'VERIFY_FAILED'" } else { "NULL" }
@@ -48,6 +68,7 @@ INSERT INTO events (
     $insertOutput = & $wranglerPath d1 execute DB `
         --local `
         --file $tempSql `
+        --persist-to $persistPath `
         --config $wranglerConfigPath `
         --json
     if ($LASTEXITCODE -ne 0) {
@@ -58,7 +79,7 @@ INSERT INTO events (
         throw "Local D1 telemetry seed did not report success."
     }
 
-    $funnelResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query funnel
+    $funnelResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query funnel -PersistTo $persistPath
     $funnelRow = @($funnelResult[0].results | Where-Object { $_.app_version -eq $appVersion })[0]
     if (-not $funnelRow) {
         throw "Funnel query did not return the seeded app version."
@@ -72,7 +93,7 @@ INSERT INTO events (
         throw "Funnel query unique installation count was not 1."
     }
 
-    $errorsResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query errors
+    $errorsResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query errors -PersistTo $persistPath
     $errorRow = @($errorsResult[0].results | Where-Object {
         $_.app_version -eq $appVersion -and $_.error_code -eq "VERIFY_FAILED"
     })[0]
@@ -80,7 +101,7 @@ INSERT INTO events (
         throw "Error aggregation query did not return the seeded VERIFY_FAILED event."
     }
 
-    $readyResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query ready
+    $readyResult = & $queryScriptPath -DatabaseName DB -SinceDays 1 -Query ready -PersistTo $persistPath
     $readyRow = @($readyResult[0].results | Where-Object { $_.app_version -eq $appVersion })[0]
     if (-not $readyRow -or [double]$readyRow.ready_reached_per_app_opened -ne 1.0) {
         throw "Ready conversion query did not return a 1.0 event conversion."
@@ -97,12 +118,10 @@ INSERT INTO events (
     }
     Write-Output "M5 telemetry query validation passed."
 } finally {
-    $cleanupOutput = & $wranglerPath d1 execute DB `
-        --local `
-        --command "DELETE FROM events WHERE app_version = '$appVersion'" `
-        --config $wranglerConfigPath `
-        --json 2>$null
     if (Test-Path -LiteralPath $tempSql) {
         Remove-Item -LiteralPath $tempSql -Force
+    }
+    if (Test-Path -LiteralPath $persistPath) {
+        Remove-Item -LiteralPath $persistPath -Recurse -Force
     }
 }

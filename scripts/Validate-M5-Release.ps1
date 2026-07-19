@@ -37,6 +37,12 @@ foreach ($snippet in @(
         throw "M5 release validation failed. build-release.ps1 is missing snippet: $snippet"
     }
 }
+if ($buildScript.Contains('$UseDevelopmentTelemetry -and [string]::IsNullOrWhiteSpace($TelemetryEndpoint)')) {
+    throw "M5 release validation failed. Development telemetry selection must override any ambient endpoint."
+}
+if (-not $buildScript.Contains('$PSBoundParameters.ContainsKey("TelemetryEndpoint")')) {
+    throw "M5 release validation failed. Explicit and development telemetry endpoints must be mutually exclusive."
+}
 
 $versionTemplate = Get-Content -Raw -Encoding UTF8 -LiteralPath $versionTemplatePath
 foreach ($snippet in @("VIBEREADY_APP_VERSION_W", "VIBEREADY_COMPILED_TELEMETRY_ENDPOINT")) {
