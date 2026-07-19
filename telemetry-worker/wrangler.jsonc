@@ -6,8 +6,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "vibeready-telemetry-dev",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_name": "vibeready-telemetry",
+      "database_id": "a7ac5e17-9bfc-41af-9f03-852c60cc761f"
     }
   ],
   "vars": {
