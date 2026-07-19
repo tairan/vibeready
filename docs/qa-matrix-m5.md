@@ -11,6 +11,7 @@ This matrix separates automated local gates from external release gates.
 | External signing | Authenticode certificate and timestamped signature | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Sign -RequireSignature` | Packaged EXE has valid signature | Release owner |
 | Clean Windows 10 x64 | First run, opt-in telemetry, scan, repair/manual, verification | Run ZIP on clean Windows 10 x64 VM | No crashes; no telemetry when consent off; Ready path works when tools are available | QA |
 | Clean Windows 11 x64 | First run, opt-in telemetry, scan, repair/manual, verification | Run ZIP on clean Windows 11 x64 VM | No crashes; no telemetry when consent off; Ready path works when tools are available | QA |
-| Cloudflare production | D1 DB, Worker deploy, migration, endpoint smoke | `wrangler d1 migrations apply` and `wrangler deploy` in `telemetry-worker` | `/healthz` returns ok and `/v1/telemetry/batch` persists accepted events | Infra owner |
+| Cloudflare development | Deployed Worker, D1 binding, accepted event, privacy rejection | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Test-DevelopmentTelemetry.ps1` | Development `/healthz` reports schema v1 and D1; batch accepts one anonymous event; prohibited `full_path` is rejected | Automated remote check |
+| Cloudflare production | Production domain, retention, rate limits, monitoring, endpoint smoke | Production deployment evidence and the same remote contract check against the production configuration | `/healthz` returns ok and `/v1/telemetry/batch` persists accepted events | Infra owner |
 
 External release remains blocked until a production Cloudflare account/project and code-signing certificate are provided.
