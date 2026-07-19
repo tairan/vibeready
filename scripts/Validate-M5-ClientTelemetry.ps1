@@ -48,18 +48,56 @@ foreach ($snippet in @(
     "kMaxQueueEvents = 200",
     "kMaxQueueBytes = 256 * 1024",
     "kMaxBatchEvents = 20",
+    "kMaxEventBytes = 8 * 1024",
     "consentEnabled",
     "ClearQueue();",
-    "https://",
-    "http://127.0.0.1",
-    "http://localhost",
+    "WinHttpCrackUrl",
+    'host == L"127.0.0.1"',
+    'host == L"localhost"',
+    "status == 408",
+    "status == 429",
     "CreateThread",
     "WinHttpSendRequest",
     "HasDisallowedFieldName",
-    "HasSensitiveValue"
+    "HasSensitiveValue",
+    "Telemetry must never terminate or alter the main application flow"
 )) {
     if (-not $source.Contains($snippet)) {
         throw "M5 client telemetry validation failed. telemetry.cpp missing snippet: $snippet"
+    }
+}
+
+$telemetryTestPath = Join-Path $repoRoot "tests\windows\telemetry_contract.cpp"
+$transportTestPath = Join-Path $repoRoot "scripts\Test-M5-ClientTelemetryTransport.ps1"
+foreach ($path in @($telemetryTestPath, $transportTestPath)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "M5 client telemetry validation failed. Missing runtime contract test: $path"
+    }
+}
+$telemetryTest = Get-Content -Raw -Encoding UTF8 -LiteralPath $telemetryTestPath
+foreach ($snippet in @(
+    "Consent-off telemetry created a queue file.",
+    "Telemetry queue exceeded the 200-event limit.",
+    "Telemetry queue exceeded the 256 KiB limit.",
+    "Oversized telemetry was added to the queue.",
+    "Disabling consent did not clear the telemetry queue.",
+    "Telemetry operation escaped into the application flow"
+)) {
+    if (-not $telemetryTest.Contains($snippet)) {
+        throw "M5 client telemetry validation failed. Contract test missing assertion: $snippet"
+    }
+}
+
+$transportTest = Get-Content -Raw -Encoding UTF8 -LiteralPath $transportTestPath
+foreach ($snippet in @(
+    "first_response_status = 429",
+    "accepted_events",
+    "max_batch_events",
+    "Expected 45 accepted telemetry events after retry",
+    "Telemetry batch exceeded the 20-event client limit"
+)) {
+    if (-not $transportTest.Contains($snippet)) {
+        throw "M5 client telemetry validation failed. Transport test missing assertion: $snippet"
     }
 }
 

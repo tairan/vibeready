@@ -40,6 +40,14 @@ The successful batch response is also a D1 write-path check: the Worker awaits `
 - `CHI-39` privacy and funnel work: use schema version `1` and the `events` table contract in `telemetry-worker/migrations/0001_events.sql`. Production D1 queries still require separately authorized Cloudflare access.
 - `CHI-40` development release checks: build with the batch endpoint and confirm `dist/release-manifest.json` reports `telemetry_endpoint_configured=true`. Do not treat this development URL as completion of production domain, signing, or QA requirements.
 
+Build a development integration package directly from the machine-readable configuration:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -UseDevelopmentTelemetry
+```
+
+The generated release manifest records both `telemetry_endpoint_configured=true` and the selected public endpoint. External production builds should pass their approved endpoint explicitly and must not rely on the development switch.
+
 Example for the current PowerShell process:
 
 ```powershell

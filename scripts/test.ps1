@@ -32,6 +32,7 @@ if (Test-Path -LiteralPath $ctestFile) {
     if ($LASTEXITCODE -ne 0) {
         throw "CTest failed with exit code $LASTEXITCODE."
     }
+    & (Join-Path $PSScriptRoot "Test-M5-ClientTelemetryTransport.ps1")
 } else {
     Write-Host "CTest not configured; skipped."
 }

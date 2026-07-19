@@ -1,6 +1,7 @@
 param(
     [switch]$SkipBuild,
     [switch]$SkipSmoke,
+    [switch]$SkipRemoteTelemetry,
     [switch]$RequireSignature
 )
 
@@ -39,12 +40,28 @@ function Invoke-Gate {
 
 $results = @()
 $results += Invoke-Gate "telemetry_privacy" { & (Join-Path $PSScriptRoot "Validate-M5-TelemetryPrivacy.ps1") }
+$results += Invoke-Gate "telemetry_queries_local_d1" { & (Join-Path $PSScriptRoot "Test-M5-TelemetryQueries.ps1") }
 $results += Invoke-Gate "worker_static_contract" { & (Join-Path $PSScriptRoot "Validate-M5-Worker.ps1") }
 $results += Invoke-Gate "worker_node_contract" { node --test (Join-Path $repoRoot "telemetry-worker\test\worker-contract.test.mjs") }
 $results += Invoke-Gate "client_telemetry" { & (Join-Path $PSScriptRoot "Validate-M5-ClientTelemetry.ps1") }
+if ($SkipRemoteTelemetry) {
+    $results += [pscustomobject][ordered]@{
+        name = "development_cloudflare_remote"
+        status = "skipped"
+        started_at = $null
+        ended_at = $null
+        detail = "Skipped by -SkipRemoteTelemetry."
+    }
+} else {
+    $results += Invoke-Gate "development_cloudflare_remote" {
+        & (Join-Path $PSScriptRoot "Test-DevelopmentTelemetry.ps1")
+    }
+}
 
 if (-not $SkipBuild) {
-    $results += Invoke-Gate "release_build" { & (Join-Path $PSScriptRoot "build-release.ps1") }
+    $results += Invoke-Gate "release_build" {
+        & (Join-Path $PSScriptRoot "build-release.ps1") -UseDevelopmentTelemetry
+    }
 }
 
 $results += Invoke-Gate "package_smoke" { & (Join-Path $PSScriptRoot "test-package.ps1") -SkipSmoke:$SkipSmoke }
@@ -69,7 +86,7 @@ $results += [pscustomobject][ordered]@{
     status = "pending_external"
     started_at = $null
     ended_at = $null
-    detail = "Requires Cloudflare account, D1 database, Worker route, and deployment credentials."
+    detail = "Development workers.dev service is verified; production custom domain, retention, rate limits, and monitoring remain external."
 }
 $results += [pscustomobject][ordered]@{
     name = "external_release_signature"
