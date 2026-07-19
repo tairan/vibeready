@@ -4,6 +4,8 @@ import test from "node:test";
 
 const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 const migration = readFileSync(new URL("../migrations/0001_events.sql", import.meta.url), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const wranglerConfig = JSON.parse(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
 
 test("worker exposes required routes", () => {
   assert.match(source, /\/healthz/);
@@ -25,4 +27,10 @@ test("migration creates typed events table and indexes", () => {
   }
   assert.match(migration, /idx_events_event_time/i);
   assert.match(migration, /idx_events_version_event_time/i);
+});
+
+test("migration scripts target the configured D1 binding", () => {
+  assert.ok(wranglerConfig.d1_databases.some(({ binding }) => binding === "DB"));
+  assert.equal(packageJson.scripts["migrate:local"], "wrangler d1 migrations apply DB --local");
+  assert.equal(packageJson.scripts["migrate:remote"], "wrangler d1 migrations apply DB --remote");
 });
