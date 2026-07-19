@@ -57,9 +57,6 @@ int RunTransportContract(const std::wstring& endpoint) {
         }
 
         for (int attempt = 0; attempt < 200; ++attempt) {
-            if (attempt % 10 == 0) {
-                vibeready::telemetry::FlushAsync();
-            }
             if (std::filesystem::exists(queuePath) && std::filesystem::file_size(queuePath) == 0) {
                 vibeready::telemetry::SetConsent(false);
                 std::filesystem::remove_all(root, ignored);

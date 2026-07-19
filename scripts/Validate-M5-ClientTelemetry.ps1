@@ -8,8 +8,10 @@ $mainPath = Join-Path $repoRoot "src\windows\main.cpp"
 $telemetryHeaderPath = Join-Path $repoRoot "src\windows\telemetry.h"
 $telemetrySourcePath = Join-Path $repoRoot "src\windows\telemetry.cpp"
 $cmakePath = Join-Path $repoRoot "CMakeLists.txt"
+$testScriptPath = Join-Path $repoRoot "scripts\test.ps1"
+$qaMatrixPath = Join-Path $repoRoot "scripts\run-qa-matrix.ps1"
 
-foreach ($path in @($mainPath, $telemetryHeaderPath, $telemetrySourcePath, $cmakePath)) {
+foreach ($path in @($mainPath, $telemetryHeaderPath, $telemetrySourcePath, $cmakePath, $testScriptPath, $qaMatrixPath)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing client telemetry file: $path"
     }
@@ -19,6 +21,8 @@ $main = Get-Content -Raw -Encoding UTF8 -LiteralPath $mainPath
 $header = Get-Content -Raw -Encoding UTF8 -LiteralPath $telemetryHeaderPath
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $telemetrySourcePath
 $cmake = Get-Content -Raw -Encoding UTF8 -LiteralPath $cmakePath
+$testScript = Get-Content -Raw -Encoding UTF8 -LiteralPath $testScriptPath
+$qaMatrix = Get-Content -Raw -Encoding UTF8 -LiteralPath $qaMatrixPath
 
 foreach ($snippet in @(
     "src/windows/telemetry.cpp",
@@ -56,6 +60,8 @@ foreach ($snippet in @(
     'host == L"localhost"',
     "status == 408",
     "status == 429",
+    "kInitialRetryDelayMs",
+    "Sleep(retryDelayMs)",
     "CreateThread",
     "WinHttpSendRequest",
     "HasDisallowedFieldName",
@@ -87,17 +93,39 @@ foreach ($snippet in @(
         throw "M5 client telemetry validation failed. Contract test missing assertion: $snippet"
     }
 }
+if ($telemetryTest.Contains("FlushAsync();")) {
+    throw "M5 client telemetry validation failed. Transport contract must verify automatic retry without manual flushing."
+}
 
 $transportTest = Get-Content -Raw -Encoding UTF8 -LiteralPath $transportTestPath
 foreach ($snippet in @(
     "first_response_status = 429",
     "accepted_events",
     "max_batch_events",
+    "Configuration",
+    "VibeReadyTelemetryTests.exe",
+    'build\windows-x64\$Configuration\VibeReadyTelemetryTests.exe',
     "Expected 45 accepted telemetry events after retry",
     "Telemetry batch exceeded the 20-event client limit"
 )) {
     if (-not $transportTest.Contains($snippet)) {
         throw "M5 client telemetry validation failed. Transport test missing assertion: $snippet"
+    }
+}
+
+foreach ($snippet in @("-C `$Configuration", "Test-M5-ClientTelemetryTransport.ps1")) {
+    if (-not $testScript.Contains($snippet)) {
+        throw "M5 client telemetry validation failed. test.ps1 does not select and execute the configured runtime tests: $snippet"
+    }
+}
+foreach ($snippet in @(
+    "client_telemetry_runtime",
+    "client_telemetry_transport",
+    "ctest --test-dir",
+    "Test-M5-ClientTelemetryTransport.ps1"
+)) {
+    if (-not $qaMatrix.Contains($snippet)) {
+        throw "M5 client telemetry validation failed. QA matrix does not execute runtime telemetry gate: $snippet"
     }
 }
 

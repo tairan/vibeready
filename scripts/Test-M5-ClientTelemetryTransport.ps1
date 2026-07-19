@@ -1,12 +1,23 @@
 param(
-    [string]$TestExecutable = (Join-Path (Split-Path -Parent $PSScriptRoot) "build\windows-x64\VibeReadyTelemetryTests.exe")
+    [string]$TestExecutable,
+    [string]$Configuration = "Release"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-if (-not (Test-Path -LiteralPath $TestExecutable)) {
-    throw "Telemetry contract executable not found: $TestExecutable"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($TestExecutable)) {
+    $testExecutableCandidates = @(
+        (Join-Path $repoRoot "build\windows-x64\VibeReadyTelemetryTests.exe"),
+        (Join-Path $repoRoot "build\windows-x64\$Configuration\VibeReadyTelemetryTests.exe")
+    )
+    $TestExecutable = $testExecutableCandidates |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+}
+if ([string]::IsNullOrWhiteSpace($TestExecutable) -or -not (Test-Path -LiteralPath $TestExecutable)) {
+    throw "Telemetry contract executable not found for configuration '$Configuration'."
 }
 
 $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
