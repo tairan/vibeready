@@ -26,12 +26,14 @@ $port = ([System.Net.IPEndPoint]$portProbe.LocalEndpoint).Port
 $portProbe.Stop()
 
 $resultPath = Join-Path ([System.IO.Path]::GetTempPath()) ("VibeReadyTelemetryTransport-" + [guid]::NewGuid().ToString("N") + ".json")
-$job = Start-Job -ArgumentList $port, $resultPath -ScriptBlock {
-    param($Port, $ResultPath)
+$readyPath = "$resultPath.ready"
+$job = Start-Job -ArgumentList $port, $resultPath, $readyPath -ScriptBlock {
+    param($Port, $ResultPath, $ReadyPath)
 
     $listener = [System.Net.HttpListener]::new()
     $listener.Prefixes.Add("http://localhost:$Port/")
     $listener.Start()
+    Set-Content -Encoding ASCII -LiteralPath $ReadyPath -Value "ready"
     $acceptedEvents = 0
     $requestCount = 0
     $maxBatchEvents = 0
@@ -93,6 +95,18 @@ $job = Start-Job -ArgumentList $port, $resultPath -ScriptBlock {
 }
 
 try {
+    $readyDeadline = (Get-Date).AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $readyPath)) {
+        if ($job.State -notin @("NotStarted", "Running")) {
+            Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+            throw "Telemetry mock endpoint failed before becoming ready. Job state: $($job.State)"
+        }
+        if ((Get-Date) -ge $readyDeadline) {
+            throw "Timed out waiting for the telemetry mock endpoint to become ready."
+        }
+        Start-Sleep -Milliseconds 100
+    }
+
     $endpoint = "http://localhost:$port/v1/telemetry/batch"
     & $TestExecutable --transport $endpoint
     if ($LASTEXITCODE -ne 0) {
@@ -136,5 +150,8 @@ try {
     }
     if (Test-Path -LiteralPath $resultPath) {
         Remove-Item -LiteralPath $resultPath -Force
+    }
+    if (Test-Path -LiteralPath $readyPath) {
+        Remove-Item -LiteralPath $readyPath -Force
     }
 }

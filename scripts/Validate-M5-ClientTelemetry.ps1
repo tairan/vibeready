@@ -61,6 +61,8 @@ foreach ($snippet in @(
     "status == 408",
     "status == 429",
     "kInitialRetryDelayMs",
+    "kMaxRetryAttempts",
+    "retryAttempts >= kMaxRetryAttempts",
     "Sleep(retryDelayMs)",
     "CreateThread",
     "WinHttpSendRequest",
@@ -105,6 +107,8 @@ foreach ($snippet in @(
     "Configuration",
     "VibeReadyTelemetryTests.exe",
     'build\windows-x64\$Configuration\VibeReadyTelemetryTests.exe',
+    "readyPath",
+    "Timed out waiting for the telemetry mock endpoint to become ready.",
     "Expected 45 accepted telemetry events after retry",
     "Telemetry batch exceeded the 20-event client limit"
 )) {

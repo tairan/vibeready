@@ -23,6 +23,7 @@ constexpr size_t kMaxBatchEvents = 20;
 constexpr size_t kMaxEventBytes = 8 * 1024;
 constexpr DWORD kInitialRetryDelayMs = 1000;
 constexpr DWORD kMaxRetryDelayMs = 30 * 1000;
+constexpr size_t kMaxRetryAttempts = 3;
 
 struct TelemetryState {
     Context context;
@@ -431,6 +432,7 @@ bool PostBatch(const std::wstring& endpoint, const std::vector<std::string>& lin
 DWORD WINAPI FlushThreadProc(void*) {
     try {
         DWORD retryDelayMs = kInitialRetryDelayMs;
+        size_t retryAttempts = 0;
         for (;;) {
             Context context;
             std::vector<std::string> batch;
@@ -454,6 +456,10 @@ DWORD WINAPI FlushThreadProc(void*) {
             bool posted = PostBatch(context.endpoint, batch, &status);
             bool retryableStatus = status == 408 || status == 429;
             if (posted && retryableStatus) {
+                if (retryAttempts >= kMaxRetryAttempts) {
+                    break;
+                }
+                ++retryAttempts;
                 Sleep(retryDelayMs);
                 retryDelayMs = std::min(kMaxRetryDelayMs, retryDelayMs * 2);
                 continue;
@@ -465,6 +471,7 @@ DWORD WINAPI FlushThreadProc(void*) {
                 break;
             }
             retryDelayMs = kInitialRetryDelayMs;
+            retryAttempts = 0;
 
             std::lock_guard<std::mutex> lock(g_state.mutex);
             std::vector<std::string> current = ReadQueueLinesLocked();
