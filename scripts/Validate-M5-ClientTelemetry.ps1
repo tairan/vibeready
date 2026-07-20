@@ -4,14 +4,16 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$mainPath = Join-Path $repoRoot "src\windows\main.cpp"
-$telemetryHeaderPath = Join-Path $repoRoot "src\windows\telemetry.h"
-$telemetrySourcePath = Join-Path $repoRoot "src\windows\telemetry.cpp"
-$cmakePath = Join-Path $repoRoot "CMakeLists.txt"
+$clientRoot = Join-Path $repoRoot "apps\windows-client"
+$mainPath = Join-Path $clientRoot "src\main.cpp"
+$telemetryHeaderPath = Join-Path $clientRoot "src\telemetry.h"
+$telemetrySourcePath = Join-Path $clientRoot "src\telemetry.cpp"
+$repoCmakePath = Join-Path $repoRoot "CMakeLists.txt"
+$clientCmakePath = Join-Path $clientRoot "CMakeLists.txt"
 $testScriptPath = Join-Path $repoRoot "scripts\test.ps1"
 $qaMatrixPath = Join-Path $repoRoot "scripts\run-qa-matrix.ps1"
 
-foreach ($path in @($mainPath, $telemetryHeaderPath, $telemetrySourcePath, $cmakePath, $testScriptPath, $qaMatrixPath)) {
+foreach ($path in @($mainPath, $telemetryHeaderPath, $telemetrySourcePath, $repoCmakePath, $clientCmakePath, $testScriptPath, $qaMatrixPath)) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing client telemetry file: $path"
     }
@@ -20,19 +22,23 @@ foreach ($path in @($mainPath, $telemetryHeaderPath, $telemetrySourcePath, $cmak
 $main = Get-Content -Raw -Encoding UTF8 -LiteralPath $mainPath
 $header = Get-Content -Raw -Encoding UTF8 -LiteralPath $telemetryHeaderPath
 $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $telemetrySourcePath
-$cmake = Get-Content -Raw -Encoding UTF8 -LiteralPath $cmakePath
+$repoCmake = Get-Content -Raw -Encoding UTF8 -LiteralPath $repoCmakePath
+$clientCmake = Get-Content -Raw -Encoding UTF8 -LiteralPath $clientCmakePath
 $testScript = Get-Content -Raw -Encoding UTF8 -LiteralPath $testScriptPath
 $qaMatrix = Get-Content -Raw -Encoding UTF8 -LiteralPath $qaMatrixPath
 
 foreach ($snippet in @(
-    "src/windows/telemetry.cpp",
-    "src/windows/VibeReady.rc.in",
+    "src/telemetry.cpp",
+    "src/VibeReady.rc.in",
     "VIBEREADY_TELEMETRY_ENDPOINT",
     "ole32"
 )) {
-    if (-not $cmake.Contains($snippet)) {
-        throw "M5 client telemetry validation failed. CMakeLists.txt missing snippet: $snippet"
+    if (-not $clientCmake.Contains($snippet)) {
+        throw "M5 client telemetry validation failed. Client CMakeLists.txt missing snippet: $snippet"
     }
+}
+if (-not $repoCmake.Contains("add_subdirectory(apps/windows-client)")) {
+    throw "M5 client telemetry validation failed. Root CMakeLists.txt does not include the Windows client."
 }
 
 foreach ($snippet in @(
@@ -75,7 +81,7 @@ foreach ($snippet in @(
     }
 }
 
-$telemetryTestPath = Join-Path $repoRoot "tests\windows\telemetry_contract.cpp"
+$telemetryTestPath = Join-Path $clientRoot "tests\telemetry_contract.cpp"
 $transportTestPath = Join-Path $repoRoot "scripts\Test-M5-ClientTelemetryTransport.ps1"
 foreach ($path in @($telemetryTestPath, $transportTestPath)) {
     if (-not (Test-Path -LiteralPath $path)) {

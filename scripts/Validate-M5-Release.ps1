@@ -14,8 +14,8 @@ $manifestPath = Join-Path $repoRoot "dist\release-manifest.json"
 $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
 $packagedExePath = Join-Path $packageRoot "VibeReady.exe"
 $buildScriptPath = Join-Path $repoRoot "scripts\build-release.ps1"
-$versionTemplatePath = Join-Path $repoRoot "src\windows\version.h.in"
-$resourceTemplatePath = Join-Path $repoRoot "src\windows\VibeReady.rc.in"
+$versionTemplatePath = Join-Path $repoRoot "apps\windows-client\src\version.h.in"
+$resourceTemplatePath = Join-Path $repoRoot "apps\windows-client\src\VibeReady.rc.in"
 
 foreach ($path in @($ZipPath, $manifestPath, $packagedExePath, $buildScriptPath, $versionTemplatePath, $resourceTemplatePath)) {
     if (-not (Test-Path -LiteralPath $path)) {

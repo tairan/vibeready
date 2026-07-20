@@ -43,7 +43,7 @@ $results = @()
 $results += Invoke-Gate "telemetry_privacy" { & (Join-Path $PSScriptRoot "Validate-M5-TelemetryPrivacy.ps1") }
 $results += Invoke-Gate "telemetry_queries_local_d1" { & (Join-Path $PSScriptRoot "Test-M5-TelemetryQueries.ps1") }
 $results += Invoke-Gate "worker_static_contract" { & (Join-Path $PSScriptRoot "Validate-M5-Worker.ps1") }
-$results += Invoke-Gate "worker_node_contract" { node --test (Join-Path $repoRoot "telemetry-worker\test\worker-contract.test.mjs") }
+$results += Invoke-Gate "worker_node_contract" { node --test (Join-Path $repoRoot "services\telemetry-worker\test\worker-contract.test.mjs") }
 $results += Invoke-Gate "client_telemetry_static" { & (Join-Path $PSScriptRoot "Validate-M5-ClientTelemetry.ps1") }
 if ($SkipRemoteTelemetry) {
     $results += [pscustomobject][ordered]@{
