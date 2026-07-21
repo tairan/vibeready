@@ -47,11 +47,12 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-foreach ($relativePath in $legacyPaths) {
-    $path = Join-Path $repoRoot $relativePath
-    if (Test-Path -LiteralPath $path) {
-        throw "Repository layout still contains legacy path: $relativePath"
-    }
+$trackedLegacyPaths = @(& git -C $repoRoot ls-files -- $legacyPaths)
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not inspect tracked repository paths."
+}
+if ($trackedLegacyPaths.Count -gt 0) {
+    throw "Repository layout still tracks legacy paths: $($trackedLegacyPaths -join ', ')"
 }
 
 $websiteRoot = Join-Path $repoRoot "apps\website"
