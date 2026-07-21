@@ -32,8 +32,8 @@ $zip = 'dist\VibeReady-Windows-x64.zip'
 
 Observed ZIP contents:
 
-- `apps/windows-client/README.txt`
-- `apps/windows-client/THIRD-PARTY-NOTICES.txt`
+- `README.txt`
+- `THIRD-PARTY-NOTICES.txt`
 - `VibeReady.exe`
 
 The built executable was launched from:

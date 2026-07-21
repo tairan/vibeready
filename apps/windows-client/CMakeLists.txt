@@ -30,12 +30,14 @@ add_executable(VibeReady WIN32
 set_target_properties(VibeReady PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
-foreach(VIBEREADY_CONFIG Debug Release RelWithDebInfo MinSizeRel)
-  string(TOUPPER "${VIBEREADY_CONFIG}" VIBEREADY_CONFIG_UPPER)
-  set_target_properties(VibeReady PROPERTIES
-    "RUNTIME_OUTPUT_DIRECTORY_${VIBEREADY_CONFIG_UPPER}" "${CMAKE_BINARY_DIR}/${VIBEREADY_CONFIG}"
-  )
-endforeach()
+if(CMAKE_CONFIGURATION_TYPES)
+  foreach(VIBEREADY_CONFIG Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${VIBEREADY_CONFIG}" VIBEREADY_CONFIG_UPPER)
+    set_target_properties(VibeReady PROPERTIES
+      "RUNTIME_OUTPUT_DIRECTORY_${VIBEREADY_CONFIG_UPPER}" "${CMAKE_BINARY_DIR}/${VIBEREADY_CONFIG}"
+    )
+  endforeach()
+endif()
 
 target_link_libraries(VibeReady PRIVATE
   d2d1
@@ -71,12 +73,14 @@ if(BUILD_TESTING)
   set_target_properties(VibeReadyTelemetryTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
   )
-  foreach(VIBEREADY_CONFIG Debug Release RelWithDebInfo MinSizeRel)
-    string(TOUPPER "${VIBEREADY_CONFIG}" VIBEREADY_CONFIG_UPPER)
-    set_target_properties(VibeReadyTelemetryTests PROPERTIES
-      "RUNTIME_OUTPUT_DIRECTORY_${VIBEREADY_CONFIG_UPPER}" "${CMAKE_BINARY_DIR}/${VIBEREADY_CONFIG}"
-    )
-  endforeach()
+  if(CMAKE_CONFIGURATION_TYPES)
+    foreach(VIBEREADY_CONFIG Debug Release RelWithDebInfo MinSizeRel)
+      string(TOUPPER "${VIBEREADY_CONFIG}" VIBEREADY_CONFIG_UPPER)
+      set_target_properties(VibeReadyTelemetryTests PROPERTIES
+        "RUNTIME_OUTPUT_DIRECTORY_${VIBEREADY_CONFIG_UPPER}" "${CMAKE_BINARY_DIR}/${VIBEREADY_CONFIG}"
+      )
+    endforeach()
+  endif()
   target_include_directories(VibeReadyTelemetryTests PRIVATE src)
   target_link_libraries(VibeReadyTelemetryTests PRIVATE ole32 winhttp)
   target_compile_definitions(VibeReadyTelemetryTests PRIVATE
