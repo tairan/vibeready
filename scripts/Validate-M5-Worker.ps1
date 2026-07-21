@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$workerRoot = Join-Path $repoRoot "telemetry-worker"
+$workerRoot = Join-Path $repoRoot "services\telemetry-worker"
 $developmentServicesPath = Join-Path $repoRoot "config\development-services.json"
 $developmentServicesDocPath = Join-Path $repoRoot "docs\development-services.md"
 $developmentTelemetryTestPath = Join-Path $repoRoot "scripts\Test-DevelopmentTelemetry.ps1"

@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$mainPath = Join-Path $repoRoot "src\windows\main.cpp"
+$mainPath = Join-Path $repoRoot "apps\windows-client\src\main.cpp"
 
 if (-not (Test-Path -LiteralPath $mainPath)) {
     throw "Missing source file: $mainPath"

@@ -8,13 +8,14 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+& (Join-Path $PSScriptRoot "Validate-RepositoryLayout.ps1")
 & (Join-Path $PSScriptRoot "validate-rules.ps1")
 & (Join-Path $PSScriptRoot "Validate-M3.ps1")
 & (Join-Path $PSScriptRoot "Validate-M4.ps1")
 & (Join-Path $PSScriptRoot "Validate-CHI66.ps1")
 & (Join-Path $PSScriptRoot "Validate-M5-TelemetryPrivacy.ps1")
 & (Join-Path $PSScriptRoot "Validate-M5-Worker.ps1")
-node --test (Join-Path $repoRoot "telemetry-worker\test\worker-contract.test.mjs")
+node --test (Join-Path $repoRoot "services\telemetry-worker\test\worker-contract.test.mjs")
 if ($LASTEXITCODE -ne 0) {
     throw "M5 Worker node contract tests failed with exit code $LASTEXITCODE."
 }

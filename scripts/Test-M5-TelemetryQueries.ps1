@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$workerRoot = Join-Path $repoRoot "telemetry-worker"
+$workerRoot = Join-Path $repoRoot "services\telemetry-worker"
 $wranglerPath = Join-Path $workerRoot "node_modules\.bin\wrangler.cmd"
 $wranglerConfigPath = Join-Path $workerRoot "wrangler.jsonc"
 $migrationPath = Join-Path $workerRoot "migrations\0001_events.sql"

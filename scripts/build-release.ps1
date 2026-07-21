@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$clientRoot = Join-Path $repoRoot "apps\windows-client"
 $developmentServicesPath = Join-Path $repoRoot "config\development-services.json"
 $buildDir = Join-Path $repoRoot "build\windows-x64"
 $packageRoot = Join-Path $repoRoot "dist\VibeReady-Windows-x64"
@@ -290,8 +291,8 @@ if (Test-Path $packageRoot) {
 New-Item -ItemType Directory -Path $packageRoot | Out-Null
 
 Copy-Item -LiteralPath $exePath -Destination (Join-Path $packageRoot "VibeReady.exe")
-Copy-Item -LiteralPath (Join-Path $repoRoot "README.txt") -Destination (Join-Path $packageRoot "README.txt")
-Copy-Item -LiteralPath (Join-Path $repoRoot "THIRD-PARTY-NOTICES.txt") -Destination (Join-Path $packageRoot "THIRD-PARTY-NOTICES.txt")
+Copy-Item -LiteralPath (Join-Path $clientRoot "README.txt") -Destination (Join-Path $packageRoot "README.txt")
+Copy-Item -LiteralPath (Join-Path $clientRoot "THIRD-PARTY-NOTICES.txt") -Destination (Join-Path $packageRoot "THIRD-PARTY-NOTICES.txt")
 
 if (Test-Path $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
